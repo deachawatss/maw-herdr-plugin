@@ -5,7 +5,7 @@
 // Run: bun utils/smoke-help-verbs.mjs (MAW_HELP_ENTRY=<bundle> for the bundle).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -60,6 +60,7 @@ import { appendFileSync } from 'node:fs';
 appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n');
 process.exit(97);
 `, { mode: 0o755 });
+  symlinkSync(Bun.which('bash'), join(bin, 'bash'));
   // Do not inherit Herdr sockets, session IDs, registry paths or other caller config.
   const env = { PATH: bin, HOME: home, XDG_CONFIG_HOME: join(home, '.config'), TMPDIR: temporary };
   // Prove the trap is executable before trusting an empty call log.
