@@ -19,7 +19,14 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const TICKET_SH = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'herdr-ticket', 'ticket.sh');
+function pluginRoot(from) {
+  for (let dir = from; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, 'plugin.json'))) return dir;
+    if (dirname(dir) === dir) return from;
+  }
+}
+
+export const TICKET_SH = join(pluginRoot(dirname(fileURLToPath(import.meta.url))), 'scripts', 'herdr-ticket', 'ticket.sh');
 
 export function cmdTicket(args) {
   if (!existsSync(TICKET_SH)) {
