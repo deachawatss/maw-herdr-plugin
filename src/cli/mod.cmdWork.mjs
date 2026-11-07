@@ -8,6 +8,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { TargetError, callerFromEnv, shq } from './mod.target.mjs';
+import { focusPane } from './mod.attachFocus.mjs';
 import { herdrJson, herdrLine } from './mod.herdrCall.mjs';
 import { workAgentArgs } from './mod.workArgs.mjs';
 import { planTaskWorktree, taskSlug } from '../serve/bun/mod.planTaskWorktree.ts';
@@ -141,6 +142,7 @@ export async function cmdWork(args, { UsageError = Error, runAttach } = {}) {
     plan.push(worktree.create ? `git -C ${shq(repo.path)} worktree add ${shq(worktree.path)} -b ${shq(worktree.branch)}` : `# reuse worktree ${worktree.path} (${worktree.branch || 'detached'})`);
   }
   const agent = agentName(label);
+  const callerInSession = callerFromEnv()?.session === session;
 
   // a space already showing this folder is reused, not doubled
   let open = [];
@@ -152,7 +154,7 @@ export async function cmdWork(args, { UsageError = Error, runAttach } = {}) {
     `${herdrLine(['workspace', 'create', '--cwd', path, '--label', label, '--no-focus'], session)}`,
     `${herdrLine(['agent', 'start', agent, '--kind', o.engine, '--pane', '<root pane>', ...withArgs(workAgentArgs(o.engine, path))], session)}`,
     ...(prompt !== null ? [herdrLine(['agent', 'prompt', agent, prompt], session)] : []),
-  ]), ...(o.attach ? [herdrLine([], session)] : []));
+  ]), ...(callerInSession ? [`# focus ${open.length ? open[0].pane_id : 'the root pane'} in this herdr session`] : o.attach ? [herdrLine([], session)] : []));
 
   console.log(`  ${label} → ${repo.org ? `${repo.org}/${repo.name}` : repo.path}${worktree ? `  worktree ${worktree.branch}` : ''}  herdr session ${session}, agent ${agent} (${o.engine})`);
   if (o.dry) {
@@ -177,10 +179,18 @@ export async function cmdWork(args, { UsageError = Error, runAttach } = {}) {
     await worktree.materialize();
     console.log(`  ● worktree ${worktree.path} (${worktree.branch})${worktree.create ? '' : ' — reused'}`);
   }
+  const focus = async (pane) => {
+    try { await focusPane(session, pane); return true; }
+    catch (err) { console.log(`  ⚠ ${String(err.message).split('\n')[0]}\n    maw herdr a ${shq(pane)}`); return false; }
+  };
+  const bringForward = async (pane, target) => {
+    if (callerInSession) { if (await focus(pane)) console.log(`  focused ${label} (${pane})`); }
+    else if (o.attach && runAttach) { await focus(pane); runAttach(['herdr', '--session', session]); }
+    else console.log(`  bring it up: maw herdr a ${shq(target)}`);
+  };
   if (open.length) {
     console.log(`  already open: ${label} in pane ${open.map(p => p.pane_id).join(', ')} — nothing started`);
-    if (o.attach && runAttach) runAttach(['herdr', '--session', session]);
-    else console.log(`  bring it up: maw herdr a ${shq(open[0].pane_id)}`);
+    await bringForward(open[0].pane_id, open[0].pane_id);
     return;
   }
 
@@ -200,7 +210,7 @@ export async function cmdWork(args, { UsageError = Error, runAttach } = {}) {
     }
     console.log(`  ● opened ${label} in ${session} pane ${pane}; the agent ${name} (${o.engine}) is waiting at a startup question`);
     console.log(`    (Claude Code in a folder it has never opened asks whether to trust it) — answer it yourself:`);
-    console.log(`    maw herdr a ${shq(pane)}`);
+    await bringForward(pane, pane);
     if (prompt !== null) console.log(`  prompt held back until then; send it after answering:\n    maw herdr hey ${shq(pane)} ${shq(prompt)}`);
     return;   // exit 0: the space and the agent exist; the next step is a person's
   }
@@ -211,6 +221,5 @@ export async function cmdWork(args, { UsageError = Error, runAttach } = {}) {
     catch (err) { throw new TargetError(`prompt not sent — ${err?.detail || err?.message}\n  ${herdrLine(send, session)}`, 'herdr'); }
     console.log(`  ● prompt sent: ${prompt}`);
   }
-  if (o.attach && runAttach) runAttach(['herdr', '--session', session]);
-  else console.log(`  bring it up: maw herdr a ${shq(label)}`);
+  await bringForward(pane, label);
 }
