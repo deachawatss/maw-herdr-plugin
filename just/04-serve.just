@@ -8,6 +8,8 @@ bun-check:
     output=$(mktemp -d "${TMPDIR:-/tmp}/maw-herdr-bun.XXXXXX")
     trap 'rm -rf "$output"' EXIT
     bun build index.mjs --target=bun --outfile "$output/index.js"
+    cp plugin.json "$output/"
+    cp -R scripts "$output/"
     bun utils/smoke-target-grammar.mjs
     MAW_TARGET_ENTRY="$output/index.js" bun utils/smoke-target-grammar.mjs
     bun utils/smoke-lifecycle.mjs

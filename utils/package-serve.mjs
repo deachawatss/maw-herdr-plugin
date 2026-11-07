@@ -2,7 +2,7 @@
 // Build a source-independent plugin folder; never overwrite an existing output.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -27,6 +27,7 @@ function run(command, args, extra = {}) {
   if (result.status !== 0) throw new Error(`${command} failed (${result.status ?? result.signal}); incomplete package retained at ${out}`);
 }
 run('bun', ['build', join(root, 'index.mjs'), '--target=bun', '--outfile', join(out, 'index.js')]);
+cpSync(join(root, 'scripts'), join(out, 'scripts'), { recursive: true });
 const hash = path => `sha256:${createHash('sha256').update(readFileSync(path)).digest('hex')}`;
 const manifest = JSON.parse(readFileSync(join(root, 'plugin.json'), 'utf8'));
 manifest.entry = 'index.js';

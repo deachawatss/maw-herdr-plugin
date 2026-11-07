@@ -34,6 +34,9 @@ try {
   const env = { ...process.env, PATH: '/nonexistent', XDG_CACHE_HOME: join(temporary, 'cache') };
   delete env.MAW_HERDR_SERVE_BIN;
   const entry = join(packaged, 'index.js');
+  const ticket = run(bun, [entry, 'ticket', '--help'], { ...env, PATH: '/usr/bin:/bin' });
+  assert.equal(ticket.status, 0, `the package ships ticket.sh: ${ticket.stderr}`);
+  assert.match(ticket.stdout, /maw herdr ticket/);
   const help = run(bun, [entry, 'serve', '--help'], env);
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /token-file/);
