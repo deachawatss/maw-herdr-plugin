@@ -172,6 +172,31 @@ process.exit(96);
   r = run(['acme/solo', '--wt', 'other'], { FAKE_AGENT_START: 'fail' });
   ok(r.status === 1 && r.stderr.includes('without a ready agent') && r.stderr.includes('agent start'), `N other errors fail: ${r.stderr}`);
 
+  // O — the agent starts with the args of maw's commands.default, as maw-rs `maw work` does;
+  //     `a || b` keeps its meaning: --continue only when the folder has a transcript to continue
+  const solo = join(ghq, 'github.com', 'acme', 'solo');
+  const mawDir = join(home, '.config', 'maw');
+  mkdirSync(mawDir, { recursive: true });
+  writeFileSync(join(mawDir, 'maw.config.50.json'), JSON.stringify({ commands: { default: 'claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions' } }));
+  const startOf = () => calls(herdrLog).find(argv => argv.includes('start'))?.join(' ');
+  reset();
+  r = run(['acme/solo']);
+  eq(r.status, 0, `O1 exit: ${r.stderr}`);
+  eq(startOf(), '--session default agent start solo --kind claude --pane wT:p1 -- --dangerously-skip-permissions', 'O1 no transcript: the fallback args, no --continue');
+  const transcripts = join(home, '.claude', 'projects', solo.replace(/[^a-zA-Z0-9]/g, '-'));
+  mkdirSync(transcripts, { recursive: true });
+  writeFileSync(join(transcripts, '0b6c2c1e-9a4f-4d55-8d0e-2f1f3c4a5b6c.jsonl'), '{"type":"user"}\n'.repeat(100));
+  reset();
+  r = run(['acme/solo']);
+  eq(startOf(), '--session default agent start solo --kind claude --pane wT:p1 -- --dangerously-skip-permissions --continue', `O2 a transcript: --continue: ${r.stderr}`);
+  reset();
+  r = run(['acme/solo', '--dry']);
+  ok(r.stdout.includes('agent start solo --kind claude --pane \'<root pane>\' -- --dangerously-skip-permissions --continue'), `O3 --dry plans the args: ${r.stdout}`);
+  reset();
+  r = run(['acme/solo', '-e', 'codex']);
+  eq(startOf(), '--session default agent start solo --kind codex --pane wT:p1', 'O4 a claude command gives no args to codex');
+  rmSync(mawDir, { recursive: true, force: true });
+
   console.log(`ok: maw herdr work — ${checks} checks (${entry === join(root, 'index.mjs') ? 'source' : 'bundle'})`);
 } finally {
   rmSync(temporary, { recursive: true, force: true });

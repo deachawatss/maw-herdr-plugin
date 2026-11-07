@@ -9,6 +9,7 @@ import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { TargetError, callerFromEnv, shq } from './mod.target.mjs';
 import { herdrJson, herdrLine } from './mod.herdrCall.mjs';
+import { workAgentArgs } from './mod.workArgs.mjs';
 import { planTaskWorktree, taskSlug } from '../serve/bun/mod.planTaskWorktree.ts';
 
 const USAGE = 'maw herdr work <repo|.|path|url> [task] [--wt [slug]] [--engine <kind>] [--prompt <text>] [--attach] [--dry]';
@@ -111,6 +112,7 @@ const herdrErrorCode = (err) => {
   return undefined;
 };
 const agentName = (label) => (label.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[^a-z]+/, '') || 'work').slice(0, 32);
+const withArgs = (args) => (args.length ? ['--', ...args] : []);
 const real = (p) => { try { return realpathSync(p); } catch { return null; } };
 
 export async function cmdWork(args, { UsageError = Error, runAttach } = {}) {
@@ -148,7 +150,7 @@ export async function cmdWork(args, { UsageError = Error, runAttach } = {}) {
   }
   plan.push(...(open.length ? [`# already open: ${open.map(p => p.pane_id).join(', ')}`] : [
     `${herdrLine(['workspace', 'create', '--cwd', path, '--label', label, '--no-focus'], session)}`,
-    `${herdrLine(['agent', 'start', agent, '--kind', o.engine, '--pane', '<root pane>'], session)}`,
+    `${herdrLine(['agent', 'start', agent, '--kind', o.engine, '--pane', '<root pane>', ...withArgs(workAgentArgs(o.engine, path))], session)}`,
     ...(prompt !== null ? [herdrLine(['agent', 'prompt', agent, prompt], session)] : []),
   ]), ...(o.attach ? [herdrLine([], session)] : []));
 
@@ -187,7 +189,7 @@ export async function cmdWork(args, { UsageError = Error, runAttach } = {}) {
   if (!pane) throw new TargetError(`workspace create returned no root pane: ${JSON.stringify(created).slice(0, 160)}\n  ${herdrLine(['workspace', 'list'], session)}`, 'herdr');
   const name = agentName(label);
   // an engine can take longer than one herdr call to come up: wake allows 60 s, so does work
-  const start = ['agent', 'start', name, '--kind', o.engine, '--pane', pane];
+  const start = ['agent', 'start', name, '--kind', o.engine, '--pane', pane, ...withArgs(workAgentArgs(o.engine, path))];
   try { await run('herdr', ['--session', session, ...start], { timeout: 60_000 }); }
   catch (err) {
     // herdr starts the engine, then will not call it ready while it sits at a question of its own:
