@@ -4,8 +4,9 @@
 // temporary; no live herdr session is touched. --dry must run nothing but the two reads.
 // Run: bun utils/smoke-work.mjs (MAW_WORK_ENTRY=<bundle> for the bundle).
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,7 +31,7 @@ const argv = process.argv.slice(2);
 appendFileSync(${JSON.stringify(herdrLog)}, JSON.stringify(argv) + '\\n');
 const a = argv[0] === '--session' ? argv.slice(2) : argv;
 const say = (value) => { process.stdout.write(typeof value === 'string' ? value : JSON.stringify(value)); process.exit(0); };
-if (a[0] === 'session' && a[1] === 'list') say({ sessions: process.env.FAKE_NO_SESSION ? [{ name: 'default', running: false, default: true }] : [{ name: 'default', running: true, default: true }, { name: 'old', running: false }] });
+if (a[0] === 'session' && a[1] === 'list') say({ sessions: process.env.FAKE_NO_SESSION ? [{ name: 'default', running: false, default: true }] : [{ name: 'default', running: true, default: true, socket_path: process.env.FAKE_SOCKET }, { name: 'old', running: false }] });
 if (a[0] === 'pane' && a[1] === 'list') say({ result: { panes: JSON.parse(process.env.FAKE_PANES || '[]') } });
 if (a[0] === 'workspace' && a[1] === 'create') say({ result: { root_pane: { pane_id: 'wT:p1' } } });
 if (a[0] === 'agent' && a[1] === 'start') {
@@ -196,6 +197,49 @@ process.exit(96);
   r = run(['acme/solo', '-e', 'codex']);
   eq(startOf(), '--session default agent start solo --kind codex --pane wT:p1', 'O4 a claude command gives no args to codex');
   rmSync(mawDir, { recursive: true, force: true });
+
+  mkdirSync(join(temporary, 'herdr'));
+  const sock = join(temporary, 'herdr', 'herdr.sock'), focusCalls = [];
+  let refuseFocus = false;
+  const server = createServer(c => c.on('data', d => {
+    for (const line of String(d).split('\n').filter(Boolean)) {
+      const msg = JSON.parse(line); focusCalls.push([msg.method, msg.params]);
+      c.write(JSON.stringify(refuseFocus ? { id: msg.id, error: { code: 'pane_not_found', message: 'no such pane' } } : { id: msg.id, result: {} }) + '\n');
+    }
+  }));
+  await new Promise(done => server.listen(sock, done));
+  const runAsync = (args, extra) => new Promise(done => {
+    const child = spawn(process.execPath, [entry, 'work', ...args], { cwd: temporary, env: { ...env, FAKE_SOCKET: sock, ...extra } });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', d => { stdout += d; }); child.stderr.on('data', d => { stderr += d; });
+    child.on('close', status => done({ status, stdout, stderr }));
+  });
+  const inside = { HERDR_PANE_ID: 'wA:p1', HERDR_SOCKET_PATH: sock };
+  reset(); focusCalls.length = 0;
+  r = await runAsync(['acme/solo', '--wt', 'front'], inside);
+  eq(r.status, 0, `P1 exit: ${r.stderr}`);
+  eq(focusCalls, [['pane.focus', { pane_id: 'wT:p1' }]], `P1 the new agent's pane is focused: ${r.stdout}`);
+  ok(r.stdout.includes('focused solo-front (wT:p1)') && !r.stdout.includes('bring it up'), `P1 says it is in front: ${r.stdout}`);
+  reset(); focusCalls.length = 0;
+  r = await runAsync([widget], { ...inside, FAKE_PANES: JSON.stringify([{ pane_id: 'wT:p9', cwd: widget }]) });
+  eq(focusCalls, [['pane.focus', { pane_id: 'wT:p9' }]], `P2 an open space is focused, not doubled: ${r.stdout}${r.stderr}`);
+  ok(!calls(herdrLog).some(argv => argv.includes('workspace') || argv.includes('agent')), 'P2 starts nothing');
+  reset(); focusCalls.length = 0;
+  r = await runAsync(['acme/solo', '--wt', 'trust'], { ...inside, FAKE_AGENT_START: 'blocked' });
+  eq(focusCalls, [['pane.focus', { pane_id: 'wT:p1' }]], `P3 an agent at its trust question is put in front to answer: ${r.stdout}`);
+  reset(); focusCalls.length = 0;
+  r = await runAsync(['acme/solo', '--wt', 'away'], {});
+  eq(focusCalls, [], 'P4 outside herdr nothing is focused');
+  ok(r.stdout.includes('bring it up: maw herdr a solo-away'), `P4 outside herdr it says how to bring it up: ${r.stdout}`);
+  reset(); focusCalls.length = 0;
+  r = await runAsync(['acme/solo', '--wt', 'plan', '--dry'], inside);
+  eq(focusCalls, [], 'P5 --dry focuses nothing');
+  ok(r.stdout.includes('# focus the root pane in this herdr session'), `P5 --dry plans the focus: ${r.stdout}`);
+  reset(); focusCalls.length = 0; refuseFocus = true;
+  r = await runAsync(['acme/solo', '--wt', 'refused'], inside);
+  eq(r.status, 0, `P6 a refused focus does not fail the work that is done: ${r.stderr}`);
+  ok(r.stdout.includes('no such pane') && r.stdout.includes('maw herdr a wT:p1'), `P6 says why and how to bring it up: ${r.stdout}`);
+  server.close();
 
   console.log(`ok: maw herdr work — ${checks} checks (${entry === join(root, 'index.mjs') ? 'source' : 'bundle'})`);
 } finally {
