@@ -14,7 +14,8 @@
 # --json (pick/open): one JSON object on stdout — {"ok":true,…,"herdr":<session>} or {"ok":false,"error":…,"fix":[…]}, exit 1.
 # --session: the herdr server to use. An inherited HERDR_SOCKET_PATH beats HERDR_SESSION in herdr, so this drops it.
 set -euo pipefail
-here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+case "${BASH_SOURCE[0]}" in */*) here=${BASH_SOURCE[0]%/*} ;; *) here=. ;; esac
+here=$(cd "$here" && pwd)
 me=${TICKET_ME:-"bash $(printf %q "$here/ticket.sh")"}   # maw herdr ticket sets TICKET_ME, so fixes say the verb
 JSON=0
 
@@ -25,7 +26,14 @@ die() {
 }
 say() { [ "$JSON" = 1 ] || printf '%s\n' "$*"; }
 q() { printf '%q' "$1"; }
-usage() { sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() {
+  printf 'usage: %s <pick|continue|open|status> <issue|worktree> [options]\n' "$me"
+  local n=0 line
+  while IFS= read -r line; do
+    n=$((n + 1)); [ "$n" -lt 2 ] && continue; [ "$n" -gt 15 ] && break
+    line=${line#\#}; printf '%s\n' "${line# }"
+  done < "${BASH_SOURCE[0]}"
+}
 
 cmd=${1:-}; [ $# -gt 0 ] && shift
 case "$cmd" in
