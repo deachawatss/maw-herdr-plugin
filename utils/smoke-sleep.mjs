@@ -50,6 +50,8 @@ try {
     wt[name] = path;
   };
   makeWorktree('idle', { ahead: 1, dirty: 2 });
+  for (const name of ['busy', 'blk', 'noid', 'secret', 'jobs', 'viaherdr', 'codexa', 'dry']) makeWorktree(name);
+  makeWorktree('unwritten', { transcript: null });
 
   const bin = join(tmp, 'bin');
   mkdirSync(bin);
@@ -227,6 +229,87 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   eq(git(wt.idle, 'rev-list', '--count', '@{u}..HEAD').trim(), '1', 'no commit and no push');
   ok(existsSync(join(wt.idle, 'dirty-0.txt')) && existsSync(join(wt.idle, 'README')), 'no file was deleted');
   ok(readdirSync(join(claudeProjects, encodeClaudeDir(wt.idle))).includes('sid-idle-1.jsonl'), 'the transcript stays');
+
+  const lastLine = text => text.trim().split('\n').pop();
+  const refused = (label, target, expect, setup = () => {}) => {
+    const before = calls().length;
+    const cardsBefore = cards().length;
+    const r = cli(['sleep', target]);
+    ok(r.rc !== 0, `${label}: exits non-zero`);
+    ok(expect.test(r.err), `${label}: ${r.err}`);
+    ok(/^\s*(maw herdr|herdr) /.test(lastLine(r.err)), `${label}: the error ends with a command: ${lastLine(r.err)}`);
+    eq(cards().length, cardsBefore, `${label}: no card was written`);
+    eq(mutationsSince(before), [], `${label}: nothing was changed`);
+  };
+
+  space('wB', 'busy');
+  start('wB:p1', 'busy-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-busy-1' });
+  patch(s => { s.status['wB:p1'] = 'working'; });
+  refused('a working agent', wt.busy, /is working/);
+  ok(alive(pid('wB:p1')), 'the working agent still runs');
+
+  space('wC', 'blk');
+  start('wC:p1', 'blk-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-blk-1' });
+  patch(s => { s.status['wC:p1'] = 'blocked'; });
+  refused('a blocked agent', wt.blk, /is blocked/);
+
+  space('wD', 'noid');
+  start('wD:p1', 'noid-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-noid-1', FAKE_NO_REGISTRY: '1' });
+  refused('an agent whose session id cannot be read', wt.noid, /cannot read the session id/);
+  ok(alive(pid('wD:p1')), 'the agent with no readable id still runs');
+
+  space('wE', 'secret');
+  start('wE:p1', 'secret-bot', 'claude', [SKIP, '--api-key', 'sk-live-marker-9'], { FAKE_SESSION_ID: 'sid-secret-1' });
+  r = cli(['sleep', wt.secret]);
+  ok(r.rc !== 0 && /secret in its argv/.test(r.err), `an argv with a secret: ${r.err}`);
+  ok(!r.err.includes('sk-live-marker-9') && !r.out.includes('sk-live-marker-9'), 'the refusal prints no secret');
+  eq(cards().length, 1, 'no card for the secret agent');
+
+  space('wF', 'jobs');
+  start('wF:p1', 'jobs-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-jobs-1' });
+  const job = spawn('sleep', ['600'], { stdio: 'ignore' });
+  jobs.push(job);
+  patch(s => {
+    s.panes.push({ pane_id: 'wF:p2', workspace_id: 'wF', tab_id: 'wF:t1', cwd: wt.jobs, focused: false });
+    s.jobs['wF:p2'] = { pid: job.pid, argv: ['bun', 'dev-server.ts'], argv0: 'bun', name: 'bun' };
+  });
+  refused('a space with a server pane', wt.jobs, /running a job/);
+  ok(alive(pid('wF:p1')) && alive(job.pid), 'agent and server are untouched');
+
+  space('wG', 'viaherdr');
+  start('wG:p1', 'viaherdr-bot', 'claude', [SKIP, '--resume', 'sid-viaherdr-old'], { FAKE_HERDR_SESSION: 'sid-viaherdr-new' });
+  const viaTranscript = join(claudeProjects, encodeClaudeDir(wt.viaherdr));
+  writeFileSync(join(viaTranscript, 'sid-viaherdr-new.jsonl'), 'z'.repeat(2048));
+  r = cli(['sleep', wt.viaherdr]);
+  eq(r.rc, 0, `herdr's own session id: ${r.err}`);
+  eq(cards().find(c => c.card.space === 'viaherdr').card.agent.sessionId, 'sid-viaherdr-new', 'the id herdr reports wins over the argv');
+  eq(cards().find(c => c.card.space === 'viaherdr').card.agent.argv, [SKIP, '--resume', 'sid-viaherdr-old'], 'the argv is stored as read');
+
+  space('wH', 'codexa');
+  start('wH:p1', 'codexa-bot', 'codex', ['--yolo', 'resume', 'cx-codexa-1']);
+  const codexDir = join(home, '.codex', 'sessions', '2026', '11', '08');
+  mkdirSync(codexDir, { recursive: true });
+  writeFileSync(join(codexDir, 'rollout-2026-11-08T01-00-00-cx-codexa-1.jsonl'), `${JSON.stringify({ type: 'session_meta', payload: { id: 'cx-codexa-1', cwd: wt.codexa, source: 'cli' } })}\n${'z'.repeat(2048)}\n`);
+  r = cli(['sleep', wt.codexa]);
+  eq(r.rc, 0, `a codex agent: ${r.err}`);
+  eq(cards().find(c => c.card.space === 'codexa').card.agent, { kind: 'codex', sessionId: 'cx-codexa-1', argv: ['--yolo', 'resume', 'cx-codexa-1'] }, 'codex: id from its argv');
+
+  space('wI', 'dry');
+  start('wI:p1', 'dry-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-dry-1' });
+  n = calls().length;
+  const cardsBeforeDry = cards().length;
+  r = cli(['sleep', wt.dry, '--dry']);
+  eq(r.rc, 0, `--dry: ${r.err}`);
+  ok(r.out.includes('--dry: nothing was done') && r.out.includes('"sessionId": "sid-dry-1"') && r.out.includes('workspace close'), `--dry prints the card and the stop plan: ${r.out}`);
+  eq(cards().length, cardsBeforeDry, '--dry writes no card');
+  eq(mutationsSince(n), [], '--dry changes nothing');
+  ok(alive(pid('wI:p1')), '--dry stops nothing');
+
+  space('wJ', 'unwritten');
+  start('wJ:p1', 'unwritten-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-unwritten-1' });
+  refused('a session with no transcript', wt.unwritten, /no transcript on disk/);
+  r = cli(['sleep']);
+  ok(r.rc !== 0 && /maw herdr ls --agents/.test(lastLine(r.err)), `no target: ${r.err}`);
 
   console.log(`sleep smoke ok: ${checks} checks (${entry === join(root, 'index.mjs') ? 'source' : 'bundle'})`);
 } finally {
