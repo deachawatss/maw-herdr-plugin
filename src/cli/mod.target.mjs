@@ -167,10 +167,14 @@ const GIT_ENV = {
 const GIT_SAFE = ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null'];
 
 /** The worktree a directory belongs to (git's toplevel, realpath), or null. */
+function gitOut(dir, args) {
+  return execFileSync('git', [...GIT_SAFE, '-C', dir, ...args], { encoding: 'utf8', timeout: 5_000, env: GIT_ENV, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+}
+
 function gitToplevel(dir) {
   try {
-    const out = execFileSync('git', [...GIT_SAFE, '-C', dir, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 5_000, env: GIT_ENV, stdio: ['ignore', 'pipe', 'ignore'] });
-    return out.trim() ? real(out.trim()) : null;
+    const out = gitOut(dir, ['rev-parse', '--show-toplevel']);
+    return out ? real(out) : null;
   } catch {
     return null;
   }
@@ -178,7 +182,7 @@ function gitToplevel(dir) {
 
 function checkoutNames(dir) {
   try {
-    const [top, common] = execFileSync('git', [...GIT_SAFE, '-C', dir, 'rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'], { encoding: 'utf8', timeout: 5_000, env: GIT_ENV, stdio: ['ignore', 'pipe', 'ignore'] }).trim().split('\n');
+    const [top, common] = gitOut(dir, ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir']).split('\n');
     const repoDir = basename(common) === '.git' ? dirname(common) : common;
     return { worktree: basename(real(top)), repo: basename(real(repoDir)) };
   } catch {
