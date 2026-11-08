@@ -52,6 +52,10 @@ import {
   redactArgs, secretValues, sessionInArgs, withChannel, withSession,
 } from './mod.agentArgv.mjs';
 import { SAFE_ID, configuredProviders, encodeClaudeDir, findSessions } from './mod.resumeLookup.mjs';
+import { mawStateDir } from './mod.stateDir.mjs';
+import { claudeRegistryId, transcriptOf } from './mod.sessionId.mjs';
+import { SERVER_STOP_MS, SERVER_START_MS, listeningPorts, portAnswers, portListening, until } from './mod.serverPanes.mjs';
+import { buildCard, cardPath, findAsleepCard, firstLine, gitState, listCards, markWoke, wakeCardDir, writeCard } from './mod.wakeCard.mjs';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -330,12 +334,8 @@ async function performKill(plan, log) {
 
 const PERFORM = { restart: performRestart, kill: performKill };
 
-/** Where detached work reports: maw's state dir (same rule as the server), herdr/lifecycle.log. */
 export function lifecycleLogPath(env = process.env) {
-  const home = env.HOME || homedir();
-  const xdg = ['1', 'true', 'yes', 'on'].includes((env.MAW_XDG || '').toLowerCase());
-  const state = env.MAW_HOME || env.MAW_STATE_DIR || (xdg ? join(env.XDG_STATE_HOME || join(home, '.local', 'state'), 'maw') : join(home, '.maw'));
-  return join(state, 'herdr', 'lifecycle.log');
+  return join(mawStateDir(env), 'herdr', 'lifecycle.log');
 }
 
 // The entry to re-run for the detached worker: index.mjs from source, or the bundle
@@ -402,8 +402,10 @@ const HELP = {
   --no-channel             drop every development channel
   From an agent's own ! prompt, 'maw herdr restart self' hands off to a detached
   worker and returns; follow it in ${lifecycleLogPath()}.`,
-  resume: `maw herdr resume [<target>] [--session <name>] [--dry]
-  Start the agent on the newest transcript for the target's worktree (resume
+  resume: `maw herdr resume [<target>] [--session <name>] [--no-card] [--dry]
+  A target with a wake card from 'maw herdr sleep' starts the agent with the card's
+  argv on the card's session id, and marks the card woke; --no-card ignores the card.
+  Otherwise start the agent on the newest transcript for the target's worktree (resume
   providers: MAW_HERDR_RESUME_PROVIDERS, MAW_HERDR_CLAUDE_ROOTS, MAW_HERDR_CODEX_ROOTS),
   opening a herdr space for it when there is none. Refuses a running agent; a pane
   id (or self) at its shell prompt is resumed even beside a running neighbour. A
@@ -413,11 +415,24 @@ const HELP = {
   close: `maw herdr close [<target>] [--force] [--session <name>] [--dry]
   Close the target's herdr space. The worktree and its transcript stay on disk.
   A space holding a live agent, or any pane running a job, needs --force.`,
+  sleep: `maw herdr sleep <target> [--note <text>] [--session <name>] [--dry]
+       maw herdr sleep --list [--json]
+  Write a wake card, stop the idle agent and close its space. --note stores a text
+  that resume sends to the agent, after "Woke from sleep.", once it is ready.
+  --list shows every card, newest first, asleep or woke. The card holds the
+  agent's session id and argv, the folder and the git state, and sits in
+  ${wakeCardDir()} with mode 0600. 'maw herdr resume <target>' reads the card and
+  starts the same conversation by its session id. A pane running a process beside
+  the agent is a server: the card records its cwd, argv and ports, sleep stops it
+  after the agent and checks its ports are free, and resume starts it again in a new
+  pane and checks its ports answer. Refuses an agent that is working or blocked, one
+  whose session id cannot be read, one whose argv holds a secret, and a space with
+  another agent. Never commits, pushes, removes a worktree or deletes a file.`,
 };
 
 function parse(args, verb, UsageError) {
   const rest = [...args];
-  const o = { dry: takeDry(rest), session: null, force: false, channel: undefined, worker: false, help: false, target: undefined };
+  const o = { dry: takeDry(rest), session: null, force: false, noCard: false, note: null, list: false, json: false, channel: undefined, worker: false, help: false, target: undefined };
   const pos = [];
   const value = (i, flag) => {
     const a = rest[i];
@@ -432,6 +447,13 @@ function parse(args, verb, UsageError) {
       if (!v || v.startsWith('-')) throw new UsageError('--session needs a session name; list them:\n  maw herdr ls --sessions');
       o.session = v; i += skip;
     } else if (verb === 'close' && a === '--force') o.force = true;
+    else if (verb === 'resume' && a === '--no-card') o.noCard = true;
+    else if (verb === 'sleep' && (a === '--note' || a.startsWith('--note='))) {
+      const { v, skip } = value(i, '--note');
+      if (v === undefined || v === '') throw new UsageError('--note needs the text the agent reads when it wakes; see the form:\n  maw herdr sleep --help');
+      o.note = v; i += skip;
+    } else if (verb === 'sleep' && a === '--list') o.list = true;
+    else if (verb === 'sleep' && a === '--json') o.json = true;
     else if (verb === 'restart' && (a === '--channel' || a.startsWith('--channel='))) {
       const { v, skip } = value(i, '--channel');
       if (!v || v.startsWith('-')) throw new UsageError('--channel needs the development channel to load:\n  maw herdr restart self --channel server:fleet');
@@ -612,10 +634,12 @@ export async function cmdResume(args, { UsageError = Error } = {}) {
   const agents = await liveAgents();
   const held = new Map(agents.filter(a => a.sessionId).map(a => [a.sessionId, a]));
   const providers = configuredProviders();
+  const wake = o.noCard ? null : findAsleepCard(r.path);
   const aliases = new Map([[r.path, r.path]]);
-  const newest = findSessions(providers, aliases).get(r.path);
-  const found = findSessions(providers, aliases, new Set(held.keys())).get(r.path);
-  if (!found || held.has(found.id)) {
+  const newest = wake ? null : findSessions(providers, aliases).get(r.path);
+  const picked = wake ? wakeLaunch(wake, { providers, held, r }) : null;
+  const found = picked ? picked.found : findSessions(providers, aliases, new Set(held.keys())).get(r.path);
+  if (!wake && (!found || held.has(found.id))) {
     const holder = newest && held.get(newest.id);
     if (holder) {
       throw new TargetError(
@@ -631,10 +655,10 @@ export async function cmdResume(args, { UsageError = Error } = {}) {
       'no-transcript',
     );
   }
-  const launch = RESUME_LAUNCH[found.provider]?.(found.id);
+  const launch = picked ? picked.launch : RESUME_LAUNCH[found.provider]?.(found.id);
   if (!launch) throw new TargetError(`no launch rule for resume provider '${found.provider}'\n  MAW_HERDR_RESUME_PROVIDERS=claude,codex maw herdr resume ${targetHandle(r)}`, 'no-transcript');
 
-  const createSession = r.session ?? o.session ?? caller?.session ?? null;
+  const createSession = r.session ?? o.session ?? wake?.card.session ?? caller?.session ?? null;
   // A worktree opens through `worktree open --cwd <repo root>`, which binds the space
   // to its repo so herdr (and the next resolve) sees it as that worktree; a space made
   // with `workspace create --cwd` carries no worktree block and would resolve as a
@@ -652,6 +676,8 @@ export async function cmdResume(args, { UsageError = Error } = {}) {
   const plan = { verb: 'resume', session: createSession, pane: pane0, name, kind: launch.kind, args: launch.args };
   const lines = [
     `  resume    ${r.label} · ${found.provider} session ${found.id}`,
+    ...(wake ? [`    card    ${wake.path} (asleep since ${wake.card.at})`] : []),
+    ...(wake?.card.panes ?? []).map(srv => `    server  ${commandLine(srv.argv)} in ${srv.cwd}${portText(srv.ports)}`),
     `    from    ${found.file} (${(found.bytes / 1024).toFixed(0)} KB, ${new Date(found.at).toISOString()})`,
     pane0 ? `    pane    ${pane0} (open space ${r.workspace}, at its shell prompt)` : `    open    ${herdrLine(create, createSession)}`,
     `    start   ${herdrLine(startArgs({ ...plan, pane: pane0 ?? '<new root pane>' }), createSession)}`,
@@ -682,8 +708,84 @@ export async function cmdResume(args, { UsageError = Error } = {}) {
     await waitForShell(pane, createSession);
   }
   for (const l of lines) console.log(l);
-  await startAgent({ ...plan, pane }, () => {});
-  console.log(`  resumed ${r.label} in ${pane} — ${launch.kind} on session ${found.id}, agent "${name}"`);
+  try {
+    await startAgent({ ...plan, pane }, () => {});
+  } catch (err) {
+    if (wake && err?.code === 'blocked') {
+      markWoke(wake);
+      const silent = wake.card.panes?.length ? await startServers(wake.card.panes, pane, createSession) : [];
+      if (silent.length) console.error(silentServers(silent, createSession).message);
+      if (wake.card.note) throw new TargetError(`${err.message}\n  then give it the note from its wake card:\n  maw herdr hey ${paneHandle({ session: createSession }, pane)} ${shq(wakeMessage(wake.card.note))}`, 'blocked');
+    }
+    throw err;
+  }
+  if (wake) markWoke(wake);
+  const silent = wake?.card.panes?.length ? await startServers(wake.card.panes, pane, createSession) : [];
+  if (wake?.card.note) {
+    await herdr(['agent', 'prompt', pane, wakeMessage(wake.card.note)], createSession);
+    console.log(`    note    sent to ${pane}: ${firstLine(wake.card.note)}`);
+  }
+  if (silent.length) throw silentServers(silent, createSession);
+  console.log(`  resumed ${r.label} in ${pane} — ${launch.kind} on session ${found.id}, agent "${name}"${wake ? `; the wake card is marked woke (${wake.path})` : ''}`);
+}
+
+const wakeMessage = note => `Woke from sleep. ${note}`;
+const commandLine = argv => argv.map(shq).join(' ');
+const portText = ports => (ports.length ? ` · port ${ports.join(', port ')}` : '');
+
+async function stopServers(servers, session) {
+  const stuck = [];
+  for (const srv of servers) {
+    await herdr(['pane', 'send-keys', srv.pane, 'ctrl+c'], session);
+    const stopped = await until(async () => !alive(srv.pid) && !(await Promise.all(srv.ports.map(portListening))).some(Boolean), SERVER_STOP_MS);
+    if (!stopped) { stuck.push(srv); continue; }
+    console.log(`    server  ${srv.pane} stopped${srv.ports.map(port => ` · port ${port} free`).join('')}`);
+  }
+  return stuck;
+}
+
+async function startServers(servers, pane, session) {
+  const silent = [];
+  for (const srv of servers) {
+    const split = await herdrJson(['pane', 'split', pane, '--direction', 'down', '--cwd', srv.cwd, '--no-focus'], session);
+    const serverPane = split?.result?.pane?.pane_id;
+    if (!serverPane) throw new TargetError(`herdr pane split returned no pane for the server at ${srv.cwd} — the agent runs, the server does not; start it by hand:\n  ${herdrLine(['pane', 'split', pane, '--direction', 'down', '--cwd', srv.cwd], session)}`, 'herdr');
+    await herdr(['pane', 'run', serverPane, commandLine(srv.argv)], session);
+    const answered = [];
+    for (const port of srv.ports) {
+      if (await until(() => portAnswers(port), SERVER_START_MS)) answered.push(port);
+      else silent.push({ pane: serverPane, port });
+    }
+    console.log(`    server  ${serverPane} ${commandLine(srv.argv)}${answered.map(port => ` · port ${port} answers`).join('')}`);
+  }
+  return silent;
+}
+
+const silentServers = (silent, session) => new TargetError(`${silent.map(s => `port ${s.port} (pane ${s.pane})`).join(' and ')} did not answer within ${SERVER_START_MS / 1000} s of the start — the agent is back; look at the server:\n${silent.map(s => `  ${herdrLine(['pane', 'read', s.pane, '--source', 'visible', '--lines', '30'], session)}`).join('\n')}`, 'server-silent');
+
+function printCards(json) {
+  const rows = listCards().map(({ path, card }) => ({ label: card.space, cwd: card.cwd, at: card.at, state: card.state, note: card.note ? firstLine(card.note) : null, path }));
+  if (json) return void console.log(JSON.stringify(rows, null, 2));
+  if (!rows.length) return void console.log(`  no wake cards in ${wakeCardDir()}; see the agents that could sleep:\n  maw herdr ls --agents`);
+  for (const row of rows) console.log(`  ${row.state.padEnd(6)}  ${row.at}  ${row.label}  ${row.cwd}${row.note ? `  — ${row.note}` : ''}`);
+}
+
+function wakeLaunch(wake, { providers, held, r }) {
+  const { kind, sessionId, argv } = wake.card.agent;
+  const pinned = withSession(kind, argv, sessionId);
+  if (!pinned || !SAFE_ID.test(sessionId)) {
+    throw new TargetError(`the wake card ${wake.path} holds a ${kind} session id or argv that resume cannot use — nothing was done. Resume the newest transcript instead:\n  maw herdr resume ${targetHandle(r)} --no-card`, 'no-transcript');
+  }
+  const found = transcriptOf(providers, kind, r.path, sessionId);
+  if (!found) {
+    const where = providers.filter(p => p.name === kind).flatMap(p => p.roots.map(root => (p.name === 'claude' ? join(root, encodeClaudeDir(r.path)) : root)));
+    throw new TargetError(`the wake card ${wake.path} names ${kind} session ${sessionId}, and no transcript for it exists — nothing was started, so no new conversation began. See what is there (${where.map(shq).join(' ')}), or resume the newest transcript instead:\n  maw herdr resume ${targetHandle(r)} --no-card`, 'no-transcript');
+  }
+  const holder = held.get(sessionId);
+  if (holder) {
+    throw new TargetError(`the wake card ${wake.path} names ${kind} session ${sessionId}, and the agent in ${holder.pane} (session ${holder.session}) is running it — resuming it again would put two agents on one conversation; nothing was done. Look at that agent:\n  maw herdr peek --session ${shq(holder.session)} ${holder.pane}`, 'held');
+  }
+  return { found, launch: { kind, args: pinned.args } };
 }
 
 // --- kill ------------------------------------------------------------------------------
@@ -774,4 +876,115 @@ export async function cmdClose(args, { UsageError = Error } = {}) {
   console.log(line);
   await herdr(cmd, r.session);
   console.log(`  closed '${r.label}'; the worktree and its transcript stay${r.kind === 'worktree' ? `. Bring it back with:\n  maw herdr resume ${targetHandle(r)}` : ''}`);
+}
+
+// --- sleep -----------------------------------------------------------------------------
+
+export async function cmdSleep(args, { UsageError = Error } = {}) {
+  const o = parse(args, 'sleep', UsageError);
+  if (o.help) return void console.log(HELP.sleep);
+  if (o.json && !o.list) throw new UsageError('--json goes with --list:\n  maw herdr sleep --list --json');
+  if (o.list) return void printCards(o.json);
+  if (!o.target) throw new UsageError('sleep needs a target: a path, an exact name or a pane id\n  maw herdr ls --agents');
+  const caller = callerFromEnv();
+  const r = await resolveLive(o.target, { session: o.session, verb: 'sleep', caller, ...STOPPING });
+  if (!r.workspace) {
+    throw new TargetError(`'${r.label}' has no open herdr space, so no agent runs there to put to sleep — nothing was done. See what runs:\n  maw herdr ls --agents`, 'not-found');
+  }
+  const pane = requirePane(r, 'sleep');
+  const stopByHand = `maw herdr kill ${paneHandle(r, pane)} && maw herdr close ${targetHandle(r)}`;
+  if (!r.agent) throw new TargetError(`'${r.label}' runs no agent (pane ${pane} is a shell) — nothing to put to sleep. Close the space instead:\n  maw herdr close ${targetHandle(r)}`, 'not-running');
+  if (r.status === 'working' || r.status === 'blocked') {
+    throw new TargetError(`the ${r.agent} in pane ${pane} is ${r.status} — a sleep would stop it in the middle of a turn; nothing was done. Look at it, and sleep it when it is idle:\n  maw herdr peek ${paneHandle(r, pane)}`, 'busy');
+  }
+  const proc = await paneProcess(pane, r.session, r.agent);
+  if (!proc.running) {
+    throw new TargetError(`the ${r.agent} in pane ${pane} has already exited — there is no live process to read a session from; nothing was done. Bring it back from its newest transcript:\n  maw herdr resume ${paneHandle(r, pane)}`, 'not-running');
+  }
+  if (!proc.isAgent) throw notTheAgent(r, pane, proc);
+  if (proc.wrapper) {
+    throw new TargetError(`the ${r.agent} in pane ${pane} runs under a wrapper (pid ${proc.wrapper.pid}, ${wrapperCommand(proc.wrapper)}) — a wake card holds the agent's argv, not the wrapper's, so a resume would drop it; nothing was done. Stop it by hand:\n  ${stopByHand}`, 'wrapped');
+  }
+  const read = await readArgv(proc.pid, proc.herdrArgv);
+  if (!read) throw new TargetError(`pid ${proc.pid} behind pane ${pane} is gone — nothing was done. Look again:\n  maw herdr sleep ${paneHandle(r, pane)} --dry`, 'changed');
+  if (read.mismatch) throw new TargetError(`ps and herdr disagree about pid ${proc.pid}'s command line in pane ${pane} — nothing was done. Check again:\n  maw herdr sleep ${paneHandle(r, pane)} --dry`, 'changed');
+  if (read.argv.some(a => CONTROL_CHAR.test(a))) {
+    throw new TargetError(`the ${r.agent} in pane ${pane} was started with an argument holding a control character, which herdr agent start refuses on the resume — nothing was done. Stop it by hand:\n  ${stopByHand}`, 'unrelaunchable');
+  }
+  const at = execIndex(read.argv, r.agent, proc);
+  if (at === -1) {
+    throw new TargetError(`cannot find the ${r.agent} executable in pid ${proc.pid}'s command line, so there is no telling which arguments are its own — nothing was done. Stop it by hand:\n  ${stopByHand}`, 'unrelaunchable');
+  }
+  const argv = dedupeArgs(read.argv.slice(at + 1));
+  if (redactArgs(argv).some((a, i) => a !== argv[i])) {
+    throw new TargetError(`the ${r.agent} in pane ${pane} was started with a secret in its argv — a wake card holds no secret, so it could not start the agent again; nothing was done. Stop it by hand:\n  ${stopByHand}`, 'secret');
+  }
+  if (!knowsResume(r.agent)) {
+    throw new TargetError(`the resume syntax of ${r.agent} is not known here, so a wake card could not bring it back by session id — nothing was done. Stop it by hand:\n  ${stopByHand}`, 'no-session');
+  }
+  const sessionId = (await paneSessionId(pane, r.session)) ?? (r.agent === 'claude' ? claudeRegistryId(proc.pid) : null) ?? sessionInArgs(r.agent, argv);
+  if (!sessionId) {
+    throw new TargetError(`cannot read the session id of the ${r.agent} in pane ${pane} (pid ${proc.pid}): herdr reports none, ${r.agent === 'claude' ? "claude's session registry has no entry for the pid, " : ''}and its argv names none — nothing was done. Stop it by hand:\n  ${stopByHand}`, 'no-session');
+  }
+  const transcript = transcriptOf(configuredProviders(), r.agent, r.path, sessionId);
+  if (!transcript) {
+    throw new TargetError(`the ${r.agent} session ${sessionId} has no transcript on disk for ${r.path} yet, so a resume could not bring it back — nothing was done. Stop it by hand:\n  ${stopByHand}`, 'no-transcript');
+  }
+  const neighbours = r.panes.filter(p => p.pane !== pane && p.agent);
+  if (neighbours.length) {
+    throw new TargetError(
+      `'${r.label}' holds ${neighbours.length} other agent${neighbours.length === 1 ? '' : 's'}, and a wake card brings back one agent — nothing was done. Stop each other agent first:\n${neighbours.map(p => `  maw herdr kill ${paneHandle(r, p.pane)}`).join('\n')}`,
+      'running',
+    );
+  }
+  const servers = [];
+  for (const p of r.panes.filter(p => p.pane !== pane && !p.agent)) {
+    const other = await paneProcess(p.pane, r.session);
+    if (!other.running) continue;
+    const stopServer = herdrLine(['pane', 'send-keys', p.pane, 'ctrl+c'], r.session);
+    const group = other.leader ?? other.pid;
+    const serverArgv = (await readArgv(group, other.herdrArgv))?.argv;
+    if (!serverArgv) throw new TargetError(`the process in pane ${p.pane} (pid ${group}) is gone or its command line cannot be read — nothing was done. Look again:\n  maw herdr sleep ${paneHandle(r, pane)} --dry`, 'changed');
+    if (redactArgs(serverArgv).some((a, i) => a !== serverArgv[i])) {
+      throw new TargetError(`the server in pane ${p.pane} was started with a secret in its argv — a wake card holds no secret, so it could not start the server again; nothing was done. Stop the server, then sleep:\n  ${stopServer}`, 'secret');
+    }
+    if (serverArgv.some(a => CONTROL_CHAR.test(a))) {
+      throw new TargetError(`the server in pane ${p.pane} was started with an argument holding a control character, which a resume cannot type again — nothing was done. Stop the server, then sleep:\n  ${stopServer}`, 'unrelaunchable');
+    }
+    servers.push({ pane: p.pane, pid: group, cwd: p.cwd, argv: serverArgv, ports: await listeningPorts(group) });
+  }
+  if (isCaller(caller, r, pane) || (await isOurAncestor(proc.pid))) {
+    throw new TargetError(`this command runs inside the ${r.agent} it would stop — a sleep from there ends itself before it closes the space; nothing was done. Run it from another pane:\n  maw herdr sleep ${paneHandle(r, pane)}`, 'self');
+  }
+
+  const card = buildCard({ session: r.session, space: r.label, cwd: r.path, kind: r.agent, sessionId, argv, git: await gitState(r.path), note: o.note, panes: servers.map(({ cwd, argv: serverArgv, ports }) => ({ cwd, argv: serverArgv, ports })) });
+  const path = cardPath(card);
+  const plan = { verb: 'kill', session: r.session, pane, pid: proc.pid, pids: pidsOf(proc), kind: r.agent };
+  const close = ['workspace', 'close', r.workspace];
+  const lines = [
+    `  sleep     ${r.label} · ${r.agent} session ${sessionId} · pane ${pane} · ${r.session}`,
+    `    card    ${path} (mode 0600)`,
+    `    stop    ctrl+c until pid ${plan.pids.join(' and ')} exit${plan.pids.length === 1 ? 's' : ''} (up to ${QUIT_TRIES})`,
+    ...servers.map(srv => `    server  ${srv.pane} ${commandLine(srv.argv)}${portText(srv.ports)} · ctrl+c, then wait up to ${SERVER_STOP_MS / 1000} s for it to stop`),
+    `    close   ${herdrLine(close, r.session)}`,
+  ];
+  if (o.dry) {
+    printResolved(r);
+    for (const l of lines) console.log(l);
+    console.log(JSON.stringify(card, null, 2));
+    console.log('  --dry: nothing was done');
+    return;
+  }
+  writeCard(card);
+  for (const l of lines.slice(0, 2)) console.log(l);
+  await performKill(plan, () => {});
+  const stuck = await stopServers(servers, r.session);
+  if (stuck.length) {
+    throw new TargetError(
+      `${stuck.map(srv => `the server in pane ${srv.pane} (pid ${srv.pid}${portText(srv.ports)})`).join(' and ')} still runs ${SERVER_STOP_MS / 1000} s after ctrl+c — the ${r.agent} is asleep and its wake card is written (${path}), but the space stays open so the server is not cut off, and nothing was killed. Stop it, then close the space:\n${stuck.map(srv => `  kill ${srv.pid}`).join('\n')}\n  maw herdr close ${targetHandle(r)}`,
+      'stuck',
+    );
+  }
+  await herdr(close, r.session);
+  console.log(`  asleep ${r.label}: the ${r.agent} is stopped and the space is closed; the worktree and the transcript stay. Wake it with:\n  maw herdr resume ${shq(r.path)}`);
 }

@@ -56,6 +56,8 @@ maw herdr resume [<target>]     # start the agent on its worktree's newest trans
 maw herdr restore [<name>]      # list / bring back worktrees whose FOLDER is gone (branch + transcript remain)
 maw herdr ls restorable         # the same list as an ls state [--json]
 maw herdr kill [<target>]       # ctrl+c the agent until it exits; the pane stays
+maw herdr sleep <target>        # write a wake card, stop the idle agent, close its space [--note]
+maw herdr sleep --list          # every wake card, newest first, asleep or woke [--json]
 maw herdr close [<target>]      # close the herdr space; the worktree stays [--force]
 maw herdr join <target>...      # bring agents' real panes into your tab (alias: here) [--cols|--rows|--main]
 maw herdr break [<target>...]   # move panes out to a space of their own (alias: back) [--into|--label]
@@ -209,6 +211,38 @@ with one command per pane, whichever pane has focus.
 - **close** closes the space; the worktree and transcript stay. A space with a live
   agent, or a pane running any other job (a dev server, a test run), needs `--force`
   (the refusal lists the `kill` for each agent and a `pane read` for each job).
+- **sleep** `<target>` puts an idle agent away and keeps its conversation. It takes the
+  same target grammar as `kill` and `close`. It writes a wake card, kills the agent as
+  `kill` does, and closes the space as `close` does. The card is a JSON file with mode
+  0600 in `<maw state>/herdr/wake/` (`~/.maw/herdr/wake/`), outside every repo. It holds
+  the time, host, herdr session, space label, cwd, agent kind, session id, the agent's
+  argv, and the git state (branch, commits ahead of upstream, count of dirty files).
+  It holds no environment value. The session id comes from herdr's `agent_session`,
+  then from claude's own registry (`~/.claude/sessions/<pid>.json`), then from the argv.
+  Sleep refuses, before it writes anything and with a fix command, an agent that is
+  `working` or `blocked`, one whose session id it cannot read, one with no transcript on
+  disk, one whose argv holds a secret, one under a wrapper, and a space that holds
+  another agent. `--dry` prints the card and the stop plan and changes
+  nothing. Sleep never commits, pushes, removes a worktree or deletes a file.
+  Each other pane that runs a process is a server pane. The card records its cwd, the
+  argv of its foreground process and the TCP ports that process group listens on (read
+  with `lsof`); a pane at its bare shell is not recorded, and a server whose argv holds
+  a secret is refused. Sleep stops the agent first, then sends ctrl+c to each server
+  and waits up to 5 s for it to exit and its ports to be free. A server still alive
+  then is reported by pane, pid and port and is never killed with `kill -9`; the space
+  stays open and the error ends with the `kill` and `close` lines.
+  `--note <text>` stores the text in the card as given. `sleep --list` shows each card,
+  newest first: asleep or woke, the time of the sleep, the label, the cwd and the first
+  line of the note. `--json` gives the same rows as JSON.
+- **resume** with a wake card that is not woke opens the space at the card's cwd and
+  starts the agent with the card's argv, `--continue` replaced by `--resume <session id>`,
+  then marks the card woke (the file stays, as a log of each sleep). When the card holds
+  a note, resume sends "Woke from sleep. <note>" to the agent once it is ready, with the
+  same `agent prompt` delivery as `hey`; a card with no note sends nothing. Then each
+  recorded server starts again in a new pane of the space (`pane split --cwd`, then
+  `pane run` with its argv), and resume waits up to 20 s for each port to answer. A card whose
+  transcript is missing is refused and starts no conversation; `--no-card` resumes the
+  newest transcript instead. With no card, resume works as before.
 
 ### Join, break, layout — moving panes
 

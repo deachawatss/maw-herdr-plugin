@@ -11,7 +11,7 @@ import { TargetError, callerFromEnv, cmdResolve, label, resolveAgent, shq, takeD
 import { describeFocus, focusPane, planFocus } from './src/cli/mod.attachFocus.mjs';
 import { pickCandidate } from './src/cli/mod.pickCandidate.mjs';
 import { promptLine } from './src/cli/mod.promptLine.mjs';
-import { cmdClose, cmdKill, cmdRestart, cmdResume } from './src/cli/mod.lifecycle.mjs';
+import { cmdClose, cmdKill, cmdRestart, cmdResume, cmdSleep } from './src/cli/mod.lifecycle.mjs';
 import { cmdWatch, runWatcher } from './src/cli/mod.watch.mjs';
 import { cmdInbox, cmdReply } from './src/cli/mod.inbox.mjs';
 import { checkoutLine } from './src/cli/mod.checkoutLine.mjs';
@@ -33,7 +33,7 @@ import { cmdHandover } from './src/cli/mod.cmdHandover.mjs';
 
 const execFileP = promisify(execFile);
 
-const HELP = `maw herdr <ls|list|a|attach|wake|work|wt|handover|hey|peek|read|resolve|restart|resume|restore|kill|close|join|here|break|back|layout|whoami|watch|inbox|reply|audit|clean|sync|ticket|federation|fed|serve> [args]
+const HELP = `maw herdr <ls|list|a|attach|wake|work|wt|handover|hey|peek|read|resolve|restart|resume|restore|kill|close|sleep|join|here|break|back|layout|whoami|watch|inbox|reply|audit|clean|sync|ticket|federation|fed|serve> [args]
   ls [--json]                          workspaces, grouped machine → repo → worktree
   ls --path                            ...with each workspace's checkout path beneath it
   ls <running|open|resumable|cold>     every worktree in that state, open space or not
@@ -86,6 +86,8 @@ const HELP = `maw herdr <ls|list|a|attach|wake|work|wt|handover|hey|peek|read|re
                                        add at the SAME path from its branch, then resume it
   kill [<target>] [--dry]              ctrl+c the agent until it exits; the pane stays
   close [<target>] [--force] [--dry]   close the target's herdr space; worktree stays
+  sleep <target> [--dry]               write a wake card, stop the idle agent, close its space;
+                                       resume <target> brings the same conversation back
   join <target>... [--cols|--rows|--main [--ratio R]] [--tell] [--dry]
                                        bring agents' real panes into your tab (alias: here):
                                        no restart, history kept, each share set in the move
@@ -1363,6 +1365,7 @@ try {
   else if (command === 'restore') await cmdRestore(args, { UsageError });
   else if (command === 'kill') await cmdKill(args, { UsageError });
   else if (command === 'close') await cmdClose(args, { UsageError });
+  else if (command === 'sleep') await cmdSleep(args, { UsageError });
   else if (command === 'join' || command === 'here') await cmdJoin(args, { UsageError, roster });
   else if (command === 'break' || command === 'back') await cmdBreak(args, { UsageError, roster });
   else if (command === 'layout') await cmdLayout(args, { UsageError });
