@@ -43,3 +43,16 @@ trigger a workflow, never add a macOS runner, and do not treat a missing CI
 result as a failure. Releases are a git tag plus a GitHub release and need no
 workflow.
 
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues on the fork `deachawatss/maw-herdr-plugin`, never upstream. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default triage labels, each label string equal to its role name. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
