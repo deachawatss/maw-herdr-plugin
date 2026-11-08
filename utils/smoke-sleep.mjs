@@ -332,6 +332,7 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   eq({ kind: started.kind, args: started.args }, { kind: 'claude', args: [SKIP, '--effort', 'medium', '--resume', 'sid-idle-1'] }, '--continue became --resume <id>; the other flags stay');
   const opened = calls().filter(a => verbOf(a) === 'worktree open').at(-1);
   eq([opened[opened.indexOf('--cwd') + 1], opened[opened.indexOf('--path') + 1]], [repo, wt.idle], 'the space opens at the card cwd');
+  eq(opened.slice(0, 2), ['--session', 'default'], 'the space opens in the herdr session of the card');
   const newPane = state().panes.find(p => p.cwd === wt.idle).pane_id;
   eq(await session(newPane), 'sid-idle-1', 'the agent came back on the same session id');
   eq(cardOf('idle').card.state, 'woke', 'the card is marked woke');

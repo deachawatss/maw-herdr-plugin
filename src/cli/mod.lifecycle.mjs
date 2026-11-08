@@ -645,7 +645,7 @@ export async function cmdResume(args, { UsageError = Error } = {}) {
   const launch = picked ? picked.launch : RESUME_LAUNCH[found.provider]?.(found.id);
   if (!launch) throw new TargetError(`no launch rule for resume provider '${found.provider}'\n  MAW_HERDR_RESUME_PROVIDERS=claude,codex maw herdr resume ${targetHandle(r)}`, 'no-transcript');
 
-  const createSession = r.session ?? o.session ?? caller?.session ?? null;
+  const createSession = r.session ?? o.session ?? wake?.card.session ?? caller?.session ?? null;
   // A worktree opens through `worktree open --cwd <repo root>`, which binds the space
   // to its repo so herdr (and the next resolve) sees it as that worktree; a space made
   // with `workspace create --cwd` carries no worktree block and would resolve as a
