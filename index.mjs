@@ -137,7 +137,8 @@ session's role — the place work lives — is a WORKSPACE, and one session hold
   org/repo       that ghq clone's main worktree, in any case (the form 'maw locate' prints)
   digger-oracle  a name: exact label, then a repo's main worktree, then an oracle's main
                  worktree (neo = neo-oracle), then a unique substring
-hey and peek also take an agent name or a workspace/tab label, as they always have.
+hey and peek also take an agent name, a workspace/tab label, or the folder of the
+worktree or repo an agent sits in (Trading, neo = neo-oracle), so a room still finds it.
 An ambiguous target lists its candidates and does nothing. --dry (alias --dry-run)
 prints what a target resolves to and exits. Most herdr agents are unnamed until
 someone runs 'herdr agent rename', so the workspace label is the handle that always

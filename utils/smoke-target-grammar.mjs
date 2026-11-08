@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  TargetError, callerFromEnv, classifyTarget, pickTier, requirePane, resolveTarget, sessionFromSocket, takeDry,
+  TargetError, callerFromEnv, classifyTarget, pickTier, requirePane, resolveAgent, resolveTarget, sessionFromSocket, takeDry,
 } from '../src/cli/mod.target.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -447,6 +447,24 @@ else { console.error('fake herdr: unexpected', JSON.stringify(args)); process.ex
     const r = run(['resolve', 'omp', '--json'], { env: { FAKE_WEIRD: '1' } });
     eq(r.rc, 0, r.err); eq(JSON.parse(r.out).resolved.pane, 'wC:p1');
     ok(r.err.includes('weird') && r.err.includes('herdr --session weird api snapshot') && !r.err.includes('TypeError'), r.err);
+  });
+  const roomRow = (pane, cwd, focused) => ({ session: 'default', pane, agent: 'claude', name: null, status: 'idle', workspace: 'digger-oracle/gamma', activeTab: 'wR:t1', tab: 'wR:t1', tabLabel: null, focused, cwd });
+  const room = [roomRow('wR:p1', digger, true), roomRow('wR:p2', join(gamma, 'wt', 'gamma-wip'), false)];
+  check('hey <repo> in a room reaches the pane in that repo, not the focused one', () => {
+    const hit = resolveAgent(room, 'gamma', 'hey', { caller: null, cwd: tmp });
+    eq(hit.pane, 'wR:p2'); eq(hit.how, 'repo');
+  });
+  check('hey <oracle short name> in a room reaches the pane in <name>-oracle', () => {
+    const hit = resolveAgent([roomRow('wR:p2', gamma, true), roomRow('wR:p1', digger, false)], 'digger', 'hey', { caller: null, cwd: tmp });
+    eq(hit.pane, 'wR:p1'); eq(hit.how, 'oracle name');
+  });
+  check('hey <worktree folder> in a room reaches the pane in that worktree', () => {
+    const hit = resolveAgent(room, 'gamma-wip', 'hey', { caller: null, cwd: tmp });
+    eq(hit.pane, 'wR:p2'); eq(hit.how, 'worktree');
+  });
+  check('a room pane outside git, or with no cwd, falls back to the old tiers', () => {
+    const hit = resolveAgent([roomRow('wR:p1', join(tmp, 'scratch'), false), roomRow('wR:p2', null, true)], 'gamma', 'hey', { caller: null, cwd: tmp });
+    eq(hit.pane, 'wR:p2'); eq(hit.how, 'substring, focused pane');
   });
   if (fails.length) throw new Error(`${fails.length} review regression(s):\n${fails.join('\n')}`);
 
