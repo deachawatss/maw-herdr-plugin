@@ -530,7 +530,20 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   eq(srvPanes.length, 2, 'in a pane of its own, in the space of the agent');
   jobs.push({ pid: state().jobs[run.pane].pid });
   ok(await answers(srvPort), 'the port answers again');
+  const srvSeq = calls().map(verbOf);
+  ok(srvSeq.lastIndexOf('pane run') > srvSeq.lastIndexOf('agent start'), 'the server starts after the agent');
   ok(r.out.includes(`port ${srvPort} answers`), `the resume reports that the port answers: ${r.out}`);
+
+  r = cli(['sleep', wt.srv, '--note', 'servers first']);
+  eq(r.rc, 0, `sleep the space with its server again, with a note: ${r.err}${r.out}`);
+  ok(!(await answers(srvPort)), 'the port is free again');
+  n = calls().length;
+  r = cli(['resume', wt.srv]);
+  eq(r.rc, 0, `resume with a server and a note: ${r.err}${r.out}`);
+  jobs.push({ pid: state().jobs[state().runs.at(-1).pane].pid });
+  const wakeOrder = calls().slice(n).map(verbOf);
+  ok(wakeOrder.indexOf('agent start') < wakeOrder.indexOf('pane run') && wakeOrder.indexOf('pane run') < wakeOrder.indexOf('agent prompt'), `agent, then server, then note: ${wakeOrder.filter(v => ['agent start', 'pane run', 'agent prompt'].includes(v))}`);
+  ok(await answers(srvPort), 'the port answers after the second wake');
 
   const stubPort = await freePort();
   space('wQ', 'stub');

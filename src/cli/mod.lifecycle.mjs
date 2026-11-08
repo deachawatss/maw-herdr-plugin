@@ -713,17 +713,19 @@ export async function cmdResume(args, { UsageError = Error } = {}) {
   } catch (err) {
     if (wake && err?.code === 'blocked') {
       markWoke(wake);
-      if (wake.card.panes?.length) await startServers(wake.card.panes, pane, createSession);
+      const silent = wake.card.panes?.length ? await startServers(wake.card.panes, pane, createSession) : [];
+      if (silent.length) console.error(silentServers(silent, createSession).message);
       if (wake.card.note) throw new TargetError(`${err.message}\n  then give it the note from its wake card:\n  maw herdr hey ${paneHandle({ session: createSession }, pane)} ${shq(wakeMessage(wake.card.note))}`, 'blocked');
     }
     throw err;
   }
   if (wake) markWoke(wake);
+  const silent = wake?.card.panes?.length ? await startServers(wake.card.panes, pane, createSession) : [];
   if (wake?.card.note) {
     await herdr(['agent', 'prompt', pane, wakeMessage(wake.card.note)], createSession);
     console.log(`    note    sent to ${pane}: ${firstLine(wake.card.note)}`);
   }
-  if (wake?.card.panes?.length) await startServers(wake.card.panes, pane, createSession);
+  if (silent.length) throw silentServers(silent, createSession);
   console.log(`  resumed ${r.label} in ${pane} — ${launch.kind} on session ${found.id}, agent "${name}"${wake ? `; the wake card is marked woke (${wake.path})` : ''}`);
 }
 
@@ -756,15 +758,15 @@ async function startServers(servers, pane, session) {
     }
     console.log(`    server  ${serverPane} ${commandLine(srv.argv)}${answered.map(port => ` · port ${port} answers`).join('')}`);
   }
-  if (silent.length) {
-    throw new TargetError(`${silent.map(s => `port ${s.port} (pane ${s.pane})`).join(' and ')} did not answer within ${SERVER_START_MS / 1000} s of the start — the agent is back; look at the server:\n${silent.map(s => `  ${herdrLine(['pane', 'read', s.pane, '--source', 'visible', '--lines', '30'], session)}`).join('\n')}`, 'server-silent');
-  }
+  return silent;
 }
+
+const silentServers = (silent, session) => new TargetError(`${silent.map(s => `port ${s.port} (pane ${s.pane})`).join(' and ')} did not answer within ${SERVER_START_MS / 1000} s of the start — the agent is back; look at the server:\n${silent.map(s => `  ${herdrLine(['pane', 'read', s.pane, '--source', 'visible', '--lines', '30'], session)}`).join('\n')}`, 'server-silent');
 
 function printCards(json) {
   const rows = listCards().map(({ path, card }) => ({ label: card.space, cwd: card.cwd, at: card.at, state: card.state, note: card.note ? firstLine(card.note) : null, path }));
   if (json) return void console.log(JSON.stringify(rows, null, 2));
-  if (!rows.length) return void console.log(`  no wake cards in ${wakeCardDir()}; put an idle agent to sleep with:\n  maw herdr sleep <target>`);
+  if (!rows.length) return void console.log(`  no wake cards in ${wakeCardDir()}; see the agents that could sleep:\n  maw herdr ls --agents`);
   for (const row of rows) console.log(`  ${row.state.padEnd(6)}  ${row.at}  ${row.label}  ${row.cwd}${row.note ? `  — ${row.note}` : ''}`);
 }
 
