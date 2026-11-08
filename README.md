@@ -56,7 +56,8 @@ maw herdr resume [<target>]     # start the agent on its worktree's newest trans
 maw herdr restore [<name>]      # list / bring back worktrees whose FOLDER is gone (branch + transcript remain)
 maw herdr ls restorable         # the same list as an ls state [--json]
 maw herdr kill [<target>]       # ctrl+c the agent until it exits; the pane stays
-maw herdr sleep <target>        # write a wake card, stop the idle agent, close its space
+maw herdr sleep <target>        # write a wake card, stop the idle agent, close its space [--note]
+maw herdr sleep --list          # every wake card, newest first, asleep or woke [--json]
 maw herdr close [<target>]      # close the herdr space; the worktree stays [--force]
 maw herdr join <target>...      # bring agents' real panes into your tab (alias: here) [--cols|--rows|--main]
 maw herdr break [<target>...]   # move panes out to a space of their own (alias: back) [--into|--label]
@@ -223,9 +224,14 @@ with one command per pane, whichever pane has focus.
   disk, one whose argv holds a secret, one under a wrapper, and a space that holds
   another agent or a running job. `--dry` prints the card and the stop plan and changes
   nothing. Sleep never commits, pushes, removes a worktree or deletes a file.
+  `--note <text>` stores the text in the card as given. `sleep --list` shows each card,
+  newest first: asleep or woke, the time of the sleep, the label, the cwd and the first
+  line of the note. `--json` gives the same rows as JSON.
 - **resume** with a wake card that is not woke opens the space at the card's cwd and
   starts the agent with the card's argv, `--continue` replaced by `--resume <session id>`,
-  then marks the card woke (the file stays, as a log of each sleep). A card whose
+  then marks the card woke (the file stays, as a log of each sleep). When the card holds
+  a note, resume sends "Woke from sleep. <note>" to the agent once it is ready, with the
+  same `agent prompt` delivery as `hey`; a card with no note sends nothing. A card whose
   transcript is missing is refused and starts no conversation; `--no-card` resumes the
   newest transcript instead. With no card, resume works as before.
 

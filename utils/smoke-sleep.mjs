@@ -50,7 +50,7 @@ try {
     wt[name] = path;
   };
   makeWorktree('idle', { ahead: 1, dirty: 2 });
-  for (const name of ['busy', 'blk', 'noid', 'secret', 'jobs', 'viaherdr', 'codexa', 'dry', 'nocard', 'gone', 'blockstart', 'twice']) makeWorktree(name);
+  for (const name of ['busy', 'blk', 'noid', 'secret', 'jobs', 'viaherdr', 'codexa', 'dry', 'nocard', 'gone', 'blockstart', 'twice', 'noted']) makeWorktree(name);
   makeWorktree('unwritten', { transcript: null });
 
   const bin = join(tmp, 'bin');
@@ -126,6 +126,12 @@ else if (verb === 'pane send-keys') {
   out({ ok: true });
 }
 else if (verb === 'pane read') process.stdout.write('fake viewport\\n');
+else if (verb === 'agent prompt') {
+  if (!live(rest[2])) die('fake herdr: no agent in ' + rest[2]);
+  s.prompts.push({ pane: rest[2], text: rest[3] });
+  save(s);
+  out({ ok: true });
+}
 else if (verb === 'agent start') {
   const name = rest[2];
   const kind = rest[rest.indexOf('--kind') + 1];
@@ -171,7 +177,7 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   writeFileSync(join(bin, 'ghq'), `#!/bin/sh\n[ "$1" = root ] && echo ${JSON.stringify(ghqRoot)}\n`);
   chmodSync(join(bin, 'ghq'), 0o700);
 
-  const state0 = { workspaces: [], panes: [], procs: {}, names: {}, agentSession: {}, status: {}, starts: [], jobs: {} };
+  const state0 = { workspaces: [], panes: [], procs: {}, names: {}, agentSession: {}, status: {}, starts: [], jobs: {}, prompts: [] };
   writeFileSync(stateFile, JSON.stringify(state0));
   const state = () => JSON.parse(readFileSync(stateFile, 'utf8'));
   const patch = fn => { const s = state(); fn(s); writeFileSync(stateFile, JSON.stringify(s)); };
@@ -339,6 +345,7 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   ok(!!cardOf('idle').card.wokeAt, 'with the time of the wake');
   eq(cardOf('idle').card.agent, idleCard.card.agent, 'the card is kept as it was');
   eq(statSync(idleCard.path).mode & 0o777, 0o600, 'a woke card is still private');
+  eq(state().prompts, [], 'a card with no note sends no message');
 
   n = calls().length;
   r = cli(['resume', wt.idle]);
@@ -408,6 +415,49 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   eq(r.rc, 0, `resume with two cards: ${r.err}`);
   eq(state().starts.at(-1).args, ['--resume', 'sid-twice-2'], 'the newest card wins');
   eq(cards().filter(c => c.card.space === 'twice').map(c => c.card.state), ['woke', 'woke'], 'the older card is woke too, so no later resume reads it');
+
+  space('wO', 'noted');
+  start('wO:p1', 'noted-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-noted-1' });
+  const note = 'Wind said go for #44.\nRun /implement on it, then sleep again.';
+  r = cli(['sleep', wt.noted, '--note', note]);
+  eq(r.rc, 0, `sleep with a note: ${r.err}${r.out}`);
+  eq(cardOf('noted').card.note, note, 'the note is stored as given');
+  eq(cardOf('idle').card.note ?? null, null, 'a sleep with no note stores none');
+  r = cli(['sleep', '--note']);
+  ok(r.rc !== 0 && /--note needs/.test(r.err), `--note with no text: ${r.err}`);
+
+  r = cli(['sleep', '--list']);
+  eq(r.rc, 0, `sleep --list: ${r.err}`);
+  const listed = r.out.split('\n').filter(l => /^\s+(asleep|woke)\s/.test(l));
+  eq(listed.length, cards().length, `one line per card: ${r.out}`);
+  ok(/^\s+asleep\s/.test(listed[0]) && listed[0].includes('noted') && listed[0].includes(wt.noted) && listed[0].includes('Wind said go for #44.') && !listed[0].includes('Run /implement'), `newest first, with label, cwd, state and the first line of the note: ${listed[0]}`);
+  ok(listed.some(l => /^\s+woke\s/.test(l) && l.includes(wt.idle)), `a woke card is listed as woke: ${r.out}`);
+  r = cli(['sleep', '--list', '--json']);
+  eq(r.rc, 0, `sleep --list --json: ${r.err}`);
+  const rows = JSON.parse(r.out);
+  eq(rows.length, cards().length, 'one row per card');
+  eq(rows[0], { label: 'noted', cwd: wt.noted, at: cardOf('noted').card.at, state: 'asleep', note: 'Wind said go for #44.', path: cardOf('noted').path }, 'the newest row carries the same data');
+  ok(rows.every((row, i) => i === 0 || rows[i - 1].at >= row.at), 'rows are newest first');
+
+  const promptsBefore = state().prompts.length;
+  r = cli(['resume', wt.noted]);
+  eq(r.rc, 0, `resume with a note: ${r.err}${r.out}`);
+  const notedPane = state().panes.find(p => p.cwd === wt.noted).pane_id;
+  eq(state().prompts.slice(promptsBefore), [{ pane: notedPane, text: `Woke from sleep. ${note}` }], 'the note goes to the agent as its first message');
+  const sequence = calls().map(verbOf);
+  ok(sequence.lastIndexOf('agent prompt') > sequence.lastIndexOf('agent start'), 'the note goes after the agent is ready');
+  eq(cardOf('noted').card.state, 'woke', 'the card is woke');
+  ok(existsSync(cardOf('noted').path), 'the card file stays');
+
+  r = cli(['kill', notedPane]);
+  eq(r.rc, 0, `kill: ${r.err}`);
+  await sleep(30);
+  writeFileSync(join(claudeProjects, encodeClaudeDir(wt.noted), 'sid-noted-2.jsonl'), 'z'.repeat(2048));
+  const promptsAfter = state().prompts.length;
+  r = cli(['resume', notedPane]);
+  eq(r.rc, 0, `a second resume of a woke card: ${r.err}${r.out}`);
+  eq(state().starts.at(-1).args, ['--resume', 'sid-noted-2'], 'it works as a resume with no card');
+  eq(state().prompts.length, promptsAfter, 'the note is not sent again');
 
   console.log(`sleep smoke ok: ${checks} checks (${entry === join(root, 'index.mjs') ? 'source' : 'bundle'})`);
 } finally {

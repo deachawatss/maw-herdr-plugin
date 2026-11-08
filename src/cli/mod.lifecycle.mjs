@@ -54,7 +54,7 @@ import {
 import { SAFE_ID, configuredProviders, encodeClaudeDir, findSessions } from './mod.resumeLookup.mjs';
 import { mawStateDir } from './mod.stateDir.mjs';
 import { claudeRegistryId, transcriptOf } from './mod.sessionId.mjs';
-import { buildCard, cardPath, findAsleepCard, gitState, markWoke, wakeCardDir, writeCard } from './mod.wakeCard.mjs';
+import { buildCard, cardPath, findAsleepCard, firstLine, gitState, listCards, markWoke, wakeCardDir, writeCard } from './mod.wakeCard.mjs';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -414,8 +414,11 @@ const HELP = {
   close: `maw herdr close [<target>] [--force] [--session <name>] [--dry]
   Close the target's herdr space. The worktree and its transcript stay on disk.
   A space holding a live agent, or any pane running a job, needs --force.`,
-  sleep: `maw herdr sleep <target> [--session <name>] [--dry]
-  Write a wake card, stop the idle agent and close its space. The card holds the
+  sleep: `maw herdr sleep <target> [--note <text>] [--session <name>] [--dry]
+       maw herdr sleep --list [--json]
+  Write a wake card, stop the idle agent and close its space. --note stores a text
+  that resume sends to the agent, after "Woke from sleep.", once it is ready.
+  --list shows every card, newest first, asleep or woke. The card holds the
   agent's session id and argv, the folder and the git state, and sits in
   ${wakeCardDir()} with mode 0600. 'maw herdr resume <target>' reads the card and
   starts the same conversation by its session id. Refuses an agent that is working
@@ -425,7 +428,7 @@ const HELP = {
 
 function parse(args, verb, UsageError) {
   const rest = [...args];
-  const o = { dry: takeDry(rest), session: null, force: false, noCard: false, channel: undefined, worker: false, help: false, target: undefined };
+  const o = { dry: takeDry(rest), session: null, force: false, noCard: false, note: null, list: false, json: false, channel: undefined, worker: false, help: false, target: undefined };
   const pos = [];
   const value = (i, flag) => {
     const a = rest[i];
@@ -441,6 +444,12 @@ function parse(args, verb, UsageError) {
       o.session = v; i += skip;
     } else if (verb === 'close' && a === '--force') o.force = true;
     else if (verb === 'resume' && a === '--no-card') o.noCard = true;
+    else if (verb === 'sleep' && (a === '--note' || a.startsWith('--note='))) {
+      const { v, skip } = value(i, '--note');
+      if (v === undefined || v === '') throw new UsageError('--note needs the text the agent reads when it wakes; see the form:\n  maw herdr sleep --help');
+      o.note = v; i += skip;
+    } else if (verb === 'sleep' && a === '--list') o.list = true;
+    else if (verb === 'sleep' && a === '--json') o.json = true;
     else if (verb === 'restart' && (a === '--channel' || a.startsWith('--channel='))) {
       const { v, skip } = value(i, '--channel');
       if (!v || v.startsWith('-')) throw new UsageError('--channel needs the development channel to load:\n  maw herdr restart self --channel server:fleet');
@@ -697,11 +706,27 @@ export async function cmdResume(args, { UsageError = Error } = {}) {
   try {
     await startAgent({ ...plan, pane }, () => {});
   } catch (err) {
-    if (wake && err?.code === 'blocked') markWoke(wake);
+    if (wake && err?.code === 'blocked') {
+      markWoke(wake);
+      if (wake.card.note) throw new TargetError(`${err.message}\n  then give it the note from its wake card:\n  maw herdr hey ${paneHandle({ session: createSession }, pane)} ${shq(wakeMessage(wake.card.note))}`, 'blocked');
+    }
     throw err;
   }
   if (wake) markWoke(wake);
+  if (wake?.card.note) {
+    await herdr(['agent', 'prompt', pane, wakeMessage(wake.card.note)], createSession);
+    console.log(`    note    sent to ${pane}: ${firstLine(wake.card.note)}`);
+  }
   console.log(`  resumed ${r.label} in ${pane} — ${launch.kind} on session ${found.id}, agent "${name}"${wake ? `; the wake card is marked woke (${wake.path})` : ''}`);
+}
+
+const wakeMessage = note => `Woke from sleep. ${note}`;
+
+function printCards(json) {
+  const rows = listCards().map(({ path, card }) => ({ label: card.space, cwd: card.cwd, at: card.at, state: card.state, note: card.note ? firstLine(card.note) : null, path }));
+  if (json) return void console.log(JSON.stringify(rows, null, 2));
+  if (!rows.length) return void console.log(`  no wake cards in ${wakeCardDir()}; put an idle agent to sleep with:\n  maw herdr sleep <target>`);
+  for (const row of rows) console.log(`  ${row.state.padEnd(6)}  ${row.at}  ${row.label}  ${row.cwd}${row.note ? `  — ${row.note}` : ''}`);
 }
 
 function wakeLaunch(wake, { providers, held, r }) {
@@ -817,6 +842,8 @@ export async function cmdClose(args, { UsageError = Error } = {}) {
 export async function cmdSleep(args, { UsageError = Error } = {}) {
   const o = parse(args, 'sleep', UsageError);
   if (o.help) return void console.log(HELP.sleep);
+  if (o.json && !o.list) throw new UsageError('--json goes with --list:\n  maw herdr sleep --list --json');
+  if (o.list) return void printCards(o.json);
   if (!o.target) throw new UsageError('sleep needs a target: a path, an exact name or a pane id\n  maw herdr ls --agents');
   const caller = callerFromEnv();
   const r = await resolveLive(o.target, { session: o.session, verb: 'sleep', caller, ...STOPPING });
@@ -881,7 +908,7 @@ export async function cmdSleep(args, { UsageError = Error } = {}) {
     throw new TargetError(`this command runs inside the ${r.agent} it would stop — a sleep from there ends itself before it closes the space; nothing was done. Run it from another pane:\n  maw herdr sleep ${paneHandle(r, pane)}`, 'self');
   }
 
-  const card = buildCard({ session: r.session, space: r.label, cwd: r.path, kind: r.agent, sessionId, argv, git: await gitState(r.path) });
+  const card = buildCard({ session: r.session, space: r.label, cwd: r.path, kind: r.agent, sessionId, argv, git: await gitState(r.path), note: o.note });
   const path = cardPath(card);
   const plan = { verb: 'kill', session: r.session, pane, pid: proc.pid, pids: pidsOf(proc), kind: r.agent };
   const close = ['workspace', 'close', r.workspace];

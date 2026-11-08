@@ -22,7 +22,7 @@ export async function gitState(cwd) {
   }
 }
 
-export function buildCard({ session, space, cwd, kind, sessionId, argv, git: gitInfo, at = new Date() }) {
+export function buildCard({ session, space, cwd, kind, sessionId, argv, git: gitInfo, note = null, at = new Date() }) {
   return {
     version: CARD_VERSION,
     state: 'asleep',
@@ -33,6 +33,7 @@ export function buildCard({ session, space, cwd, kind, sessionId, argv, git: git
     cwd,
     agent: { kind, sessionId, argv },
     git: gitInfo,
+    note,
   };
 }
 
@@ -47,18 +48,22 @@ export function writeCard(card, env = process.env) {
   return path;
 }
 
-export function findAsleepCard(cwd, env = process.env) {
+export const firstLine = text => String(text).split('\n')[0];
+
+export function listCards(env = process.env) {
   const dir = wakeCardDir(env);
   let names;
-  try { names = readdirSync(dir).filter(n => n.endsWith('.json')); } catch { return null; }
-  const found = [];
+  try { names = readdirSync(dir).filter(n => n.endsWith('.json')); } catch { return []; }
+  const cards = [];
   for (const name of names) {
     const path = join(dir, name);
-    let card;
-    try { card = JSON.parse(readFileSync(path, 'utf8')); } catch { continue; }
-    if (card?.state === 'asleep' && card.host === hostname() && card.cwd === cwd) found.push({ path, card });
+    try { cards.push({ path, card: JSON.parse(readFileSync(path, 'utf8')) }); } catch {}
   }
-  found.sort((a, b) => (a.card.at < b.card.at ? 1 : -1));
+  return cards.filter(c => c.card && typeof c.card.at === 'string').sort((a, b) => (a.card.at < b.card.at ? 1 : -1));
+}
+
+export function findAsleepCard(cwd, env = process.env) {
+  const found = listCards(env).filter(({ card }) => card.state === 'asleep' && card.host === hostname() && card.cwd === cwd);
   return found.length ? { ...found[0], older: found.slice(1) } : null;
 }
 
