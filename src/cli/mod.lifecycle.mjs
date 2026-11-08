@@ -713,6 +713,7 @@ export async function cmdResume(args, { UsageError = Error } = {}) {
   } catch (err) {
     if (wake && err?.code === 'blocked') {
       markWoke(wake);
+      if (wake.card.panes?.length) await startServers(wake.card.panes, pane, createSession);
       if (wake.card.note) throw new TargetError(`${err.message}\n  then give it the note from its wake card:\n  maw herdr hey ${paneHandle({ session: createSession }, pane)} ${shq(wakeMessage(wake.card.note))}`, 'blocked');
     }
     throw err;

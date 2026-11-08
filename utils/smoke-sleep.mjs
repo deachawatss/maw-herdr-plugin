@@ -51,7 +51,7 @@ try {
     wt[name] = path;
   };
   makeWorktree('idle', { ahead: 1, dirty: 2 });
-  for (const name of ['busy', 'blk', 'noid', 'secret', 'jobs', 'viaherdr', 'codexa', 'dry', 'nocard', 'gone', 'blockstart', 'twice', 'noted', 'srv', 'stub']) makeWorktree(name);
+  for (const name of ['busy', 'blk', 'noid', 'secret', 'jobs', 'viaherdr', 'codexa', 'dry', 'nocard', 'gone', 'blockstart', 'twice', 'noted', 'srv', 'stub', 'blocksrv']) makeWorktree(name);
   makeWorktree('unwritten', { transcript: null });
 
   const bin = join(tmp, 'bin');
@@ -547,6 +547,22 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   ok(!alive(pid('wQ:p1') ?? -1) || state().procs['wQ:p1'] === undefined || !alive(state().procs['wQ:p1'].pid), 'the agent is stopped');
   eq(state().workspaces.filter(w => w.label === 'stub').length, 1, 'the space stays open while the server runs');
   process.kill(stubPid, 'SIGKILL');
+
+  const blockPort = await freePort();
+  space('wR', 'blocksrv');
+  start('wR:p1', 'blocksrv-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-blocksrv-1' });
+  serve('wR:p2', wt.blocksrv, blockPort);
+  ok(await until(() => answers(blockPort)), 'the server answers before the sleep');
+  r = cli(['sleep', wt.blocksrv, '--note', 'check the build']);
+  eq(r.rc, 0, `sleep: ${r.err}`);
+  ok(!(await answers(blockPort)), 'the port is free while asleep');
+  r = cli(['resume', wt.blocksrv], { env: { FAKE_BLOCKED_START: '1' } });
+  ok(r.rc !== 0 && /blocked on a startup screen/.test(r.err), `an agent that stops at a startup screen: ${r.err}`);
+  jobs.push({ pid: state().jobs[state().runs.at(-1).pane]?.pid });
+  ok(await answers(blockPort), 'the server still starts, because the agent did');
+  ok(r.out.includes(`port ${blockPort} answers`), `the resume reports the server: ${r.out}`);
+  ok(/^\s*maw herdr hey .*Woke from sleep\. check the build/.test(lastLine(r.err)), `it ends with the line that delivers the note: ${lastLine(r.err)}`);
+  eq(cardOf('blocksrv').card.state, 'woke', 'the card is woke');
 
   console.log(`sleep smoke ok: ${checks} checks (${entry === join(root, 'index.mjs') ? 'source' : 'bundle'})`);
 } finally {
