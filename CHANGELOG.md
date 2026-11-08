@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add `maw herdr sleep <target> [--dry]` and wake-card resume (NWFTH-Software/NWFTH-PM#68). Sleep writes
+  a 0600 card (session id, argv, cwd, git state) to `<maw state>/herdr/wake/`, stops an idle agent and
+  closes its space. `resume` reads a card that is not woke, starts the agent with its argv and
+  `--resume <session id>`, and marks the card woke; `--no-card` ignores the card. `utils/smoke-sleep.mjs`.
+
 ## 26.10.5-alpha.1200 — 2026-10-05
 
 - Fix `a <name>` passing over a STOPPED herdr session named exactly `<name>` when other names merely

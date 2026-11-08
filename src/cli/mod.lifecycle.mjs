@@ -621,10 +621,12 @@ export async function cmdResume(args, { UsageError = Error } = {}) {
   const agents = await liveAgents();
   const held = new Map(agents.filter(a => a.sessionId).map(a => [a.sessionId, a]));
   const providers = configuredProviders();
+  const wake = o.noCard ? null : findAsleepCard(r.path);
   const aliases = new Map([[r.path, r.path]]);
-  const newest = findSessions(providers, aliases).get(r.path);
-  const found = findSessions(providers, aliases, new Set(held.keys())).get(r.path);
-  if (!found || held.has(found.id)) {
+  const newest = wake ? null : findSessions(providers, aliases).get(r.path);
+  const picked = wake ? wakeLaunch(wake, { providers, held, r }) : null;
+  const found = picked ? picked.found : findSessions(providers, aliases, new Set(held.keys())).get(r.path);
+  if (!wake && (!found || held.has(found.id))) {
     const holder = newest && held.get(newest.id);
     if (holder) {
       throw new TargetError(
@@ -640,7 +642,7 @@ export async function cmdResume(args, { UsageError = Error } = {}) {
       'no-transcript',
     );
   }
-  const launch = RESUME_LAUNCH[found.provider]?.(found.id);
+  const launch = picked ? picked.launch : RESUME_LAUNCH[found.provider]?.(found.id);
   if (!launch) throw new TargetError(`no launch rule for resume provider '${found.provider}'\n  MAW_HERDR_RESUME_PROVIDERS=claude,codex maw herdr resume ${targetHandle(r)}`, 'no-transcript');
 
   const createSession = r.session ?? o.session ?? caller?.session ?? null;
@@ -661,6 +663,7 @@ export async function cmdResume(args, { UsageError = Error } = {}) {
   const plan = { verb: 'resume', session: createSession, pane: pane0, name, kind: launch.kind, args: launch.args };
   const lines = [
     `  resume    ${r.label} · ${found.provider} session ${found.id}`,
+    ...(wake ? [`    card    ${wake.path} (asleep since ${wake.card.at})`] : []),
     `    from    ${found.file} (${(found.bytes / 1024).toFixed(0)} KB, ${new Date(found.at).toISOString()})`,
     pane0 ? `    pane    ${pane0} (open space ${r.workspace}, at its shell prompt)` : `    open    ${herdrLine(create, createSession)}`,
     `    start   ${herdrLine(startArgs({ ...plan, pane: pane0 ?? '<new root pane>' }), createSession)}`,
@@ -691,8 +694,32 @@ export async function cmdResume(args, { UsageError = Error } = {}) {
     await waitForShell(pane, createSession);
   }
   for (const l of lines) console.log(l);
-  await startAgent({ ...plan, pane }, () => {});
-  console.log(`  resumed ${r.label} in ${pane} — ${launch.kind} on session ${found.id}, agent "${name}"`);
+  try {
+    await startAgent({ ...plan, pane }, () => {});
+  } catch (err) {
+    if (wake && err?.code === 'blocked') markWoke(wake);
+    throw err;
+  }
+  if (wake) markWoke(wake);
+  console.log(`  resumed ${r.label} in ${pane} — ${launch.kind} on session ${found.id}, agent "${name}"${wake ? `; the wake card is marked woke (${wake.path})` : ''}`);
+}
+
+function wakeLaunch(wake, { providers, held, r }) {
+  const { kind, sessionId, argv } = wake.card.agent;
+  const pinned = withSession(kind, argv, sessionId);
+  if (!pinned || !SAFE_ID.test(sessionId)) {
+    throw new TargetError(`the wake card ${wake.path} holds a ${kind} session id or argv that resume cannot use — nothing was done. Resume the newest transcript instead:\n  maw herdr resume ${targetHandle(r)} --no-card`, 'no-transcript');
+  }
+  const found = transcriptOf(providers, kind, r.path, sessionId);
+  if (!found) {
+    const where = providers.filter(p => p.name === kind).flatMap(p => p.roots.map(root => (p.name === 'claude' ? join(root, encodeClaudeDir(r.path)) : root)));
+    throw new TargetError(`the wake card ${wake.path} names ${kind} session ${sessionId}, and no transcript for it exists — nothing was started, so no new conversation began. See what is there (${where.map(shq).join(' ')}), or resume the newest transcript instead:\n  maw herdr resume ${targetHandle(r)} --no-card`, 'no-transcript');
+  }
+  const holder = held.get(sessionId);
+  if (holder) {
+    throw new TargetError(`the wake card ${wake.path} names ${kind} session ${sessionId}, and the agent in ${holder.pane} (session ${holder.session}) is running it — resuming it again would put two agents on one conversation; nothing was done. Look at that agent:\n  maw herdr peek --session ${shq(holder.session)} ${holder.pane}`, 'held');
+  }
+  return { found, launch: { kind, args: pinned.args } };
 }
 
 // --- kill ------------------------------------------------------------------------------

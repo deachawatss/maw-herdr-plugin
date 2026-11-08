@@ -50,7 +50,7 @@ try {
     wt[name] = path;
   };
   makeWorktree('idle', { ahead: 1, dirty: 2 });
-  for (const name of ['busy', 'blk', 'noid', 'secret', 'jobs', 'viaherdr', 'codexa', 'dry']) makeWorktree(name);
+  for (const name of ['busy', 'blk', 'noid', 'secret', 'jobs', 'viaherdr', 'codexa', 'dry', 'nocard', 'gone', 'blockstart']) makeWorktree(name);
   makeWorktree('unwritten', { transcript: null });
 
   const bin = join(tmp, 'bin');
@@ -310,6 +310,85 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   refused('a session with no transcript', wt.unwritten, /no transcript on disk/);
   r = cli(['sleep']);
   ok(r.rc !== 0 && /maw herdr ls --agents/.test(lastLine(r.err)), `no target: ${r.err}`);
+
+  const session = async pane => {
+    const file = join(home, '.claude', 'sessions', `${pid(pane)}.json`);
+    for (let i = 0; i < 60 && !existsSync(file); i++) await sleep(50);
+    return JSON.parse(readFileSync(file, 'utf8')).sessionId;
+  };
+  const cardOf = space => cards().find(c => c.card.space === space);
+
+  const idleCard = cards().find(c => c.card.space === 'idle');
+  n = calls().length;
+  r = cli(['resume', wt.idle, '--dry']);
+  eq(r.rc, 0, `resume --dry: ${r.err}`);
+  ok(r.out.includes(idleCard.path) && r.out.includes('--resume sid-idle-1') && r.out.includes('--dry: nothing was done'), `resume --dry shows the card and the start: ${r.out}`);
+  eq(mutationsSince(n), [], 'resume --dry changes nothing');
+  eq(cardOf('idle').card.state, 'asleep', 'resume --dry leaves the card asleep');
+
+  r = cli(['resume', wt.idle]);
+  eq(r.rc, 0, `resume from a card: ${r.err}${r.out}`);
+  const started = state().starts.at(-1);
+  eq({ kind: started.kind, args: started.args }, { kind: 'claude', args: [SKIP, '--effort', 'medium', '--resume', 'sid-idle-1'] }, '--continue became --resume <id>; the other flags stay');
+  const opened = calls().filter(a => verbOf(a) === 'worktree open').at(-1);
+  eq([opened[opened.indexOf('--cwd') + 1], opened[opened.indexOf('--path') + 1]], [repo, wt.idle], 'the space opens at the card cwd');
+  const newPane = state().panes.find(p => p.cwd === wt.idle).pane_id;
+  eq(await session(newPane), 'sid-idle-1', 'the agent came back on the same session id');
+  eq(cardOf('idle').card.state, 'woke', 'the card is marked woke');
+  ok(!!cardOf('idle').card.wokeAt, 'with the time of the wake');
+  eq(cardOf('idle').card.agent, idleCard.card.agent, 'the card is kept as it was');
+  eq(statSync(idleCard.path).mode & 0o777, 0o600, 'a woke card is still private');
+
+  n = calls().length;
+  r = cli(['resume', wt.idle]);
+  ok(r.rc !== 0 && /already runs/.test(r.err), `resume of a running agent: ${r.err}`);
+  eq(mutationsSince(n), [], 'it changes nothing');
+
+  const nocardDir = join(claudeProjects, encodeClaudeDir(wt.nocard));
+  await sleep(30);
+  writeFileSync(join(nocardDir, 'sid-nocard-newest.jsonl'), 'n'.repeat(4096));
+  r = cli(['resume', wt.nocard]);
+  eq(r.rc, 0, `resume with no card: ${r.err}${r.out}`);
+  eq(state().starts.at(-1).args, ['--resume', 'sid-nocard-newest'], 'no card: the newest transcript, as before');
+  ok(!r.out.includes('wake card') && !r.out.includes('    card    '), 'no card: nothing about a card');
+
+  r = cli(['resume', wt.viaherdr]);
+  eq(r.rc, 0, `resume the herdr-id card: ${r.err}`);
+  eq(state().starts.at(-1).args, [SKIP, '--resume', 'sid-viaherdr-new'], 'the card id replaces the argv id');
+
+  r = cli(['resume', wt.codexa]);
+  eq(r.rc, 0, `resume a codex card: ${r.err}`);
+  const codexStart = state().starts.at(-1);
+  eq({ kind: codexStart.kind, args: codexStart.args }, { kind: 'codex', args: ['--yolo', 'resume', 'cx-codexa-1'] }, 'codex resumes by its card id');
+  eq(cardOf('codexa').card.state, 'woke');
+
+  const goneDir = join(claudeProjects, encodeClaudeDir(wt.gone));
+  writeFileSync(join(goneDir, 'sid-gone-other.jsonl'), 'o'.repeat(2048));
+  space('wL', 'gone');
+  start('wL:p1', 'gone-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-gone-1' });
+  r = cli(['sleep', wt.gone]);
+  eq(r.rc, 0, `sleep before the transcript goes: ${r.err}`);
+  rmSync(join(goneDir, 'sid-gone-1.jsonl'));
+  n = calls().length;
+  const startsBefore = state().starts.length;
+  r = cli(['resume', wt.gone]);
+  ok(r.rc !== 0 && /sid-gone-1/.test(r.err) && /no transcript/.test(r.err), `a card whose transcript is missing: ${r.err}`);
+  ok(/^\s*maw herdr resume \S+ --no-card$/.test(lastLine(r.err)), `it ends with a fix command: ${lastLine(r.err)}`);
+  eq(mutationsSince(n), [], 'nothing was opened or started');
+  eq(state().starts.length, startsBefore, 'no new conversation began');
+  eq(cardOf('gone').card.state, 'asleep', 'the card stays asleep');
+  r = cli(['resume', wt.gone, '--no-card']);
+  eq(r.rc, 0, `--no-card: ${r.err}`);
+  eq(state().starts.at(-1).args, ['--resume', 'sid-gone-other'], '--no-card uses the newest transcript');
+  eq(cardOf('gone').card.state, 'asleep', '--no-card leaves the card alone');
+
+  space('wM', 'blockstart');
+  start('wM:p1', 'blockstart-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-blockstart-1' });
+  r = cli(['sleep', wt.blockstart]);
+  eq(r.rc, 0, `sleep: ${r.err}`);
+  r = cli(['resume', wt.blockstart], { env: { FAKE_BLOCKED_START: '1' } });
+  ok(r.rc !== 0 && /blocked on a startup screen/.test(r.err), `a start that waits at a screen: ${r.err}`);
+  eq(cardOf('blockstart').card.state, 'woke', 'the agent started, so the card is woke');
 
   console.log(`sleep smoke ok: ${checks} checks (${entry === join(root, 'index.mjs') ? 'source' : 'bundle'})`);
 } finally {
