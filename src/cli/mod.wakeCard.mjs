@@ -22,7 +22,7 @@ export async function gitState(cwd) {
   }
 }
 
-export function buildCard({ session, space, cwd, kind, sessionId, argv, git: gitInfo, note = null, at = new Date() }) {
+export function buildCard({ session, space, cwd, kind, sessionId, argv, git: gitInfo, note = null, panes = [], at = new Date() }) {
   return {
     version: CARD_VERSION,
     state: 'asleep',
@@ -34,6 +34,7 @@ export function buildCard({ session, space, cwd, kind, sessionId, argv, git: git
     agent: { kind, sessionId, argv },
     git: gitInfo,
     note,
+    panes,
   };
 }
 

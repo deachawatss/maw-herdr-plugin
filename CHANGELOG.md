@@ -6,6 +6,10 @@
   a 0600 card (session id, argv, cwd, git state) to `<maw state>/herdr/wake/`, stops an idle agent and
   closes its space. `resume` reads a card that is not woke, starts the agent with its argv and
   `--resume <session id>`, and marks the card woke; `--no-card` ignores the card. `utils/smoke-sleep.mjs`.
+- Server panes sleep and wake with the agent (NWFTH-Software/NWFTH-PM#69). The card records each
+  other pane's cwd, foreground argv and listening ports; sleep stops the agent, then ctrl+c's each
+  server and checks its ports are free (a survivor is reported, never `kill -9`); resume starts each
+  server in a new pane and checks its ports answer. A space with a server pane is no longer refused.
 - Add `maw herdr sleep --note <text>` and `sleep --list [--json]` (NWFTH-Software/NWFTH-PM#70). A resume
   from a card with a note sends "Woke from sleep. <note>" once the agent is ready.
 

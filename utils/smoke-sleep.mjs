@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
+import { connect, createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { encodeClaudeDir } from '../src/cli/mod.resumeLookup.mjs';
@@ -50,7 +51,7 @@ try {
     wt[name] = path;
   };
   makeWorktree('idle', { ahead: 1, dirty: 2 });
-  for (const name of ['busy', 'blk', 'noid', 'secret', 'jobs', 'viaherdr', 'codexa', 'dry', 'nocard', 'gone', 'blockstart', 'twice', 'noted']) makeWorktree(name);
+  for (const name of ['busy', 'blk', 'noid', 'secret', 'jobs', 'viaherdr', 'codexa', 'dry', 'nocard', 'gone', 'blockstart', 'twice', 'noted', 'srv', 'stub']) makeWorktree(name);
   makeWorktree('unwritten', { transcript: null });
 
   const bin = join(tmp, 'bin');
@@ -76,6 +77,14 @@ if (id && !process.env.FAKE_NO_REGISTRY && /claude$/.test(process.argv[1])) {
 setInterval(() => {}, 1 << 30);
 `;
   for (const kind of ['claude', 'codex']) writeFileSync(join(agentsDir, kind), agentSource);
+  const serverScript = join(agentsDir, 'server.mjs');
+  writeFileSync(serverScript, `
+import { createServer } from 'node:net';
+const port = Number(process.argv[2]);
+process.on('SIGINT', () => { if (!process.argv.includes('--stubborn')) process.exit(0); });
+if (port > 0) createServer(c => c.end('ok')).listen(port, '127.0.0.1');
+setInterval(() => {}, 1 << 30);
+`);
   const fake = join(bin, 'herdr');
   writeFileSync(fake, `#!${runtime}
 import { appendFileSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -123,9 +132,29 @@ else if (verb === 'pane send-keys') {
   const [pane, key] = [rest[2], rest[3]];
   const a = live(pane);
   if (key === 'ctrl+c' && a) process.kill(a.pid, 'SIGINT');
+  const job = !a && s.jobs[pane];
+  if (key === 'ctrl+c' && job && alive(job.pid)) process.kill(job.pid, 'SIGINT');
   out({ ok: true });
 }
 else if (verb === 'pane read') process.stdout.write('fake viewport\\n');
+else if (verb === 'pane split') {
+  const from = s.panes.find(p => p.pane_id === rest[2]);
+  if (!from) die('fake herdr: no pane ' + rest[2]);
+  const id = from.workspace_id + ':p' + (s.panes.filter(p => p.workspace_id === from.workspace_id).length + 1);
+  s.panes.push({ pane_id: id, workspace_id: from.workspace_id, tab_id: from.tab_id, cwd: rest[rest.indexOf('--cwd') + 1], focused: false });
+  save(s);
+  out({ id: 'cli:pane:split', result: { pane: { pane_id: id } } });
+}
+else if (verb === 'pane run') {
+  const pane = s.panes.find(p => p.pane_id === rest[2]);
+  if (!pane) die('fake herdr: no pane ' + rest[2]);
+  const child = spawn('sh', ['-c', 'exec ' + rest.slice(3).join(' ')], { cwd: pane.cwd, detached: true, stdio: 'ignore' });
+  child.unref();
+  s.jobs[pane.pane_id] = { pid: child.pid, argv: ['sh'], argv0: 'sh', name: 'sh' };
+  s.runs.push({ pane: pane.pane_id, cwd: pane.cwd, command: rest.slice(3).join(' ') });
+  save(s);
+  out({ ok: true });
+}
 else if (verb === 'agent prompt') {
   if (!live(rest[2])) die('fake herdr: no agent in ' + rest[2]);
   s.prompts.push({ pane: rest[2], text: rest[3] });
@@ -177,7 +206,7 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   writeFileSync(join(bin, 'ghq'), `#!/bin/sh\n[ "$1" = root ] && echo ${JSON.stringify(ghqRoot)}\n`);
   chmodSync(join(bin, 'ghq'), 0o700);
 
-  const state0 = { workspaces: [], panes: [], procs: {}, names: {}, agentSession: {}, status: {}, starts: [], jobs: {}, prompts: [] };
+  const state0 = { workspaces: [], panes: [], procs: {}, names: {}, agentSession: {}, status: {}, starts: [], jobs: {}, prompts: [], runs: [] };
   writeFileSync(stateFile, JSON.stringify(state0));
   const state = () => JSON.parse(readFileSync(stateFile, 'utf8'));
   const patch = fn => { const s = state(); fn(s); writeFileSync(stateFile, JSON.stringify(s)); };
@@ -273,13 +302,15 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
 
   space('wF', 'jobs');
   start('wF:p1', 'jobs-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-jobs-1' });
-  const job = spawn('sleep', ['600'], { stdio: 'ignore' });
+  const job = spawn(runtime, [serverScript, '0', '--api-key', 'sk-server-marker-7'], { stdio: 'ignore', detached: true });
   jobs.push(job);
   patch(s => {
     s.panes.push({ pane_id: 'wF:p2', workspace_id: 'wF', tab_id: 'wF:t1', cwd: wt.jobs, focused: false });
-    s.jobs['wF:p2'] = { pid: job.pid, argv: ['bun', 'dev-server.ts'], argv0: 'bun', name: 'bun' };
+    s.jobs['wF:p2'] = { pid: job.pid, argv: ['bun', 'server.mjs'], argv0: 'bun', name: 'bun' };
   });
-  refused('a space with a server pane', wt.jobs, /running a job/);
+  r = cli(['sleep', wt.jobs]);
+  ok(r.rc !== 0 && /wF:p2/.test(r.err) && /secret in its argv/.test(r.err), `a server pane with a secret in its argv: ${r.err}`);
+  ok(!r.err.includes('sk-server-marker-7') && !r.out.includes('sk-server-marker-7'), 'the refusal prints no secret');
   ok(alive(pid('wF:p1')) && alive(job.pid), 'agent and server are untouched');
 
   space('wG', 'viaherdr');
@@ -458,6 +489,64 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   eq(r.rc, 0, `a second resume of a woke card: ${r.err}${r.out}`);
   eq(state().starts.at(-1).args, ['--resume', 'sid-noted-2'], 'it works as a resume with no card');
   eq(state().prompts.length, promptsAfter, 'the note is not sent again');
+
+  const freePort = () => new Promise(res => { const srv = createServer(); srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => res(port)); }); });
+  const answers = port => new Promise(res => { const c = connect(port, '127.0.0.1'); c.on('connect', () => { c.destroy(); res(true); }); c.on('error', () => res(false)); });
+  const until = async (fn, ms = 5_000) => { const end = Date.now() + ms; while (Date.now() < end) { if (await fn()) return true; await sleep(100); } return false; };
+  const serve = (pane, cwd, port, extra = []) => {
+    patch(s => { s.panes.push({ pane_id: pane, workspace_id: pane.split(':')[0], tab_id: pane.split(':')[0] + ':t1', cwd, focused: false }); });
+    fakeHerdr(['pane', 'run', pane, runtime, serverScript, String(port), ...extra]);
+    const jobPid = state().jobs[pane].pid;
+    jobs.push({ pid: jobPid });
+    return jobPid;
+  };
+
+  const srvPort = await freePort();
+  space('wP', 'srv');
+  start('wP:p1', 'srv-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-srv-1' });
+  mkdirSync(join(wt.srv, 'web'), { recursive: true });
+  const srvPid = serve('wP:p2', join(wt.srv, 'web'), srvPort);
+  patch(s => { s.panes.push({ pane_id: 'wP:p3', workspace_id: 'wP', tab_id: 'wP:t1', cwd: wt.srv, focused: false }); });
+  ok(await until(() => answers(srvPort)), 'the server answers before the sleep');
+  const srvAgent = pid('wP:p1');
+  n = calls().length;
+  r = cli(['sleep', wt.srv], { env: secretEnv });
+  eq(r.rc, 0, `sleep a space with a server pane: ${r.err}${r.out}`);
+  eq(cardOf('srv').card.panes, [{ cwd: join(wt.srv, 'web'), argv: [runtime, serverScript, String(srvPort)], ports: [srvPort] }], 'the card lists the server pane with its cwd, argv and port; the bare shell pane is not a server');
+  ok(!readFileSync(cardOf('srv').path, 'utf8').includes('env-value-one-marker'), 'no environment value is in the card');
+  const keys = mutationsSince(n).filter(a => verbOf(a) === 'pane send-keys').map(a => (a[0] === '--session' ? a.slice(2) : a)[2]);
+  ok(keys.indexOf('wP:p1') !== -1 && keys.indexOf('wP:p2') > keys.lastIndexOf('wP:p1'), `the agent stops first, then the server: ${keys}`);
+  ok(!alive(srvAgent) && !alive(srvPid), 'agent and server are stopped');
+  ok(!(await answers(srvPort)), 'the port is free');
+  ok(r.out.includes(`port ${srvPort} free`), `the sleep reports the port free: ${r.out}`);
+  eq(state().workspaces.filter(w => w.label === 'srv'), [], 'the space is closed');
+
+  r = cli(['resume', wt.srv]);
+  eq(r.rc, 0, `resume a space with a server: ${r.err}${r.out}`);
+  const run = state().runs.at(-1);
+  eq(run.cwd, join(wt.srv, 'web'), 'the server starts in its own cwd');
+  ok(run.command.includes(serverScript) && run.command.includes(String(srvPort)), `with its argv: ${run.command}`);
+  const srvPanes = state().panes.filter(p => state().workspaces.some(w => w.workspace_id === p.workspace_id && w.label === 'srv'));
+  eq(srvPanes.length, 2, 'in a pane of its own, in the space of the agent');
+  jobs.push({ pid: state().jobs[run.pane].pid });
+  ok(await answers(srvPort), 'the port answers again');
+  ok(r.out.includes(`port ${srvPort} answers`), `the resume reports that the port answers: ${r.out}`);
+
+  const stubPort = await freePort();
+  space('wQ', 'stub');
+  start('wQ:p1', 'stub-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-stub-1' });
+  const stubPid = serve('wQ:p2', wt.stub, stubPort, ['--stubborn']);
+  ok(await until(() => answers(stubPort)), 'the stubborn server answers');
+  const started0 = Date.now();
+  r = cli(['sleep', wt.stub]);
+  ok(r.rc !== 0, 'a server that will not stop fails the sleep');
+  ok(Date.now() - started0 >= 5_000, 'sleep waits 5 seconds for it');
+  ok(r.err.includes('wQ:p2') && r.err.includes(`port ${stubPort}`), `it names the pane and the port: ${r.err}`);
+  ok(/^\s*(kill \d+|maw herdr .*)$/.test(lastLine(r.err)) && !/kill -9|SIGKILL/.test(r.err), `it ends with a command, never kill -9: ${lastLine(r.err)}`);
+  ok(alive(stubPid), 'the stubborn server is not killed');
+  ok(!alive(pid('wQ:p1') ?? -1) || state().procs['wQ:p1'] === undefined || !alive(state().procs['wQ:p1'].pid), 'the agent is stopped');
+  eq(state().workspaces.filter(w => w.label === 'stub').length, 1, 'the space stays open while the server runs');
+  process.kill(stubPid, 'SIGKILL');
 
   console.log(`sleep smoke ok: ${checks} checks (${entry === join(root, 'index.mjs') ? 'source' : 'bundle'})`);
 } finally {

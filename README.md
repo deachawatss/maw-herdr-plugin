@@ -222,8 +222,15 @@ with one command per pane, whichever pane has focus.
   Sleep refuses, before it writes anything and with a fix command, an agent that is
   `working` or `blocked`, one whose session id it cannot read, one with no transcript on
   disk, one whose argv holds a secret, one under a wrapper, and a space that holds
-  another agent or a running job. `--dry` prints the card and the stop plan and changes
+  another agent. `--dry` prints the card and the stop plan and changes
   nothing. Sleep never commits, pushes, removes a worktree or deletes a file.
+  Each other pane that runs a process is a server pane. The card records its cwd, the
+  argv of its foreground process and the TCP ports that process group listens on (read
+  with `lsof`); a pane at its bare shell is not recorded, and a server whose argv holds
+  a secret is refused. Sleep stops the agent first, then sends ctrl+c to each server
+  and waits up to 5 s for it to exit and its ports to be free. A server still alive
+  then is reported by pane, pid and port and is never killed with `kill -9`; the space
+  stays open and the error ends with the `kill` and `close` lines.
   `--note <text>` stores the text in the card as given. `sleep --list` shows each card,
   newest first: asleep or woke, the time of the sleep, the label, the cwd and the first
   line of the note. `--json` gives the same rows as JSON.
@@ -231,7 +238,9 @@ with one command per pane, whichever pane has focus.
   starts the agent with the card's argv, `--continue` replaced by `--resume <session id>`,
   then marks the card woke (the file stays, as a log of each sleep). When the card holds
   a note, resume sends "Woke from sleep. <note>" to the agent once it is ready, with the
-  same `agent prompt` delivery as `hey`; a card with no note sends nothing. A card whose
+  same `agent prompt` delivery as `hey`; a card with no note sends nothing. Then each
+  recorded server starts again in a new pane of the space (`pane split --cwd`, then
+  `pane run` with its argv), and resume waits up to 20 s for each port to answer. A card whose
   transcript is missing is refused and starts no conversation; `--no-card` resumes the
   newest transcript instead. With no card, resume works as before.
 

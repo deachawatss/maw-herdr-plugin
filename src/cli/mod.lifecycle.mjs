@@ -54,6 +54,7 @@ import {
 import { SAFE_ID, configuredProviders, encodeClaudeDir, findSessions } from './mod.resumeLookup.mjs';
 import { mawStateDir } from './mod.stateDir.mjs';
 import { claudeRegistryId, transcriptOf } from './mod.sessionId.mjs';
+import { SERVER_STOP_MS, SERVER_START_MS, listeningPorts, portAnswers, portListening, until } from './mod.serverPanes.mjs';
 import { buildCard, cardPath, findAsleepCard, firstLine, gitState, listCards, markWoke, wakeCardDir, writeCard } from './mod.wakeCard.mjs';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -421,9 +422,12 @@ const HELP = {
   --list shows every card, newest first, asleep or woke. The card holds the
   agent's session id and argv, the folder and the git state, and sits in
   ${wakeCardDir()} with mode 0600. 'maw herdr resume <target>' reads the card and
-  starts the same conversation by its session id. Refuses an agent that is working
-  or blocked, one whose session id cannot be read, and one whose argv holds a
-  secret. Never commits, pushes, removes a worktree or deletes a file.`,
+  starts the same conversation by its session id. A pane running a process beside
+  the agent is a server: the card records its cwd, argv and ports, sleep stops it
+  after the agent and checks its ports are free, and resume starts it again in a new
+  pane and checks its ports answer. Refuses an agent that is working or blocked, one
+  whose session id cannot be read, one whose argv holds a secret, and a space with
+  another agent. Never commits, pushes, removes a worktree or deletes a file.`,
 };
 
 function parse(args, verb, UsageError) {
@@ -673,6 +677,7 @@ export async function cmdResume(args, { UsageError = Error } = {}) {
   const lines = [
     `  resume    ${r.label} · ${found.provider} session ${found.id}`,
     ...(wake ? [`    card    ${wake.path} (asleep since ${wake.card.at})`] : []),
+    ...(wake?.card.panes ?? []).map(srv => `    server  ${commandLine(srv.argv)} in ${srv.cwd}${portText(srv.ports)}`),
     `    from    ${found.file} (${(found.bytes / 1024).toFixed(0)} KB, ${new Date(found.at).toISOString()})`,
     pane0 ? `    pane    ${pane0} (open space ${r.workspace}, at its shell prompt)` : `    open    ${herdrLine(create, createSession)}`,
     `    start   ${herdrLine(startArgs({ ...plan, pane: pane0 ?? '<new root pane>' }), createSession)}`,
@@ -717,10 +722,43 @@ export async function cmdResume(args, { UsageError = Error } = {}) {
     await herdr(['agent', 'prompt', pane, wakeMessage(wake.card.note)], createSession);
     console.log(`    note    sent to ${pane}: ${firstLine(wake.card.note)}`);
   }
+  if (wake?.card.panes?.length) await startServers(wake.card.panes, pane, createSession);
   console.log(`  resumed ${r.label} in ${pane} — ${launch.kind} on session ${found.id}, agent "${name}"${wake ? `; the wake card is marked woke (${wake.path})` : ''}`);
 }
 
 const wakeMessage = note => `Woke from sleep. ${note}`;
+const commandLine = argv => argv.map(shq).join(' ');
+const portText = ports => (ports.length ? ` · port ${ports.join(', port ')}` : '');
+
+async function stopServers(servers, session) {
+  const stuck = [];
+  for (const srv of servers) {
+    await herdr(['pane', 'send-keys', srv.pane, 'ctrl+c'], session);
+    const stopped = await until(async () => !alive(srv.pid) && !(await Promise.all(srv.ports.map(portListening))).some(Boolean), SERVER_STOP_MS);
+    if (!stopped) { stuck.push(srv); continue; }
+    console.log(`    server  ${srv.pane} stopped${srv.ports.map(port => ` · port ${port} free`).join('')}`);
+  }
+  return stuck;
+}
+
+async function startServers(servers, pane, session) {
+  const silent = [];
+  for (const srv of servers) {
+    const split = await herdrJson(['pane', 'split', pane, '--direction', 'down', '--cwd', srv.cwd, '--no-focus'], session);
+    const serverPane = split?.result?.pane?.pane_id;
+    if (!serverPane) throw new TargetError(`herdr pane split returned no pane for the server at ${srv.cwd} — the agent runs, the server does not; start it by hand:\n  ${herdrLine(['pane', 'split', pane, '--direction', 'down', '--cwd', srv.cwd], session)}`, 'herdr');
+    await herdr(['pane', 'run', serverPane, commandLine(srv.argv)], session);
+    const answered = [];
+    for (const port of srv.ports) {
+      if (await until(() => portAnswers(port), SERVER_START_MS)) answered.push(port);
+      else silent.push({ pane: serverPane, port });
+    }
+    console.log(`    server  ${serverPane} ${commandLine(srv.argv)}${answered.map(port => ` · port ${port} answers`).join('')}`);
+  }
+  if (silent.length) {
+    throw new TargetError(`${silent.map(s => `port ${s.port} (pane ${s.pane})`).join(' and ')} did not answer within ${SERVER_START_MS / 1000} s of the start — the agent is back; look at the server:\n${silent.map(s => `  ${herdrLine(['pane', 'read', s.pane, '--source', 'visible', '--lines', '30'], session)}`).join('\n')}`, 'server-silent');
+  }
+}
 
 function printCards(json) {
   const rows = listCards().map(({ path, card }) => ({ label: card.space, cwd: card.cwd, at: card.at, state: card.state, note: card.note ? firstLine(card.note) : null, path }));
@@ -890,25 +928,33 @@ export async function cmdSleep(args, { UsageError = Error } = {}) {
     throw new TargetError(`the ${r.agent} session ${sessionId} has no transcript on disk for ${r.path} yet, so a resume could not bring it back — nothing was done. Stop it by hand:\n  ${stopByHand}`, 'no-transcript');
   }
   const neighbours = r.panes.filter(p => p.pane !== pane && p.agent);
-  const neighbourJobs = [];
-  for (const p of r.panes.filter(p => p.pane !== pane && !p.agent)) {
-    const other = await paneProcess(p.pane, r.session);
-    if (other.running) neighbourJobs.push({ pane: p.pane, name: other.name, pid: other.pid });
-  }
-  if (neighbours.length || neighbourJobs.length) {
+  if (neighbours.length) {
     throw new TargetError(
-      `'${r.label}' holds ${[neighbours.length ? `${neighbours.length} other agent${neighbours.length === 1 ? '' : 's'}` : null, neighbourJobs.length ? `${neighbourJobs.length} pane${neighbourJobs.length === 1 ? '' : 's'} running a job (${neighbourJobs.map(j => `${j.pane}: ${j.name} pid ${j.pid}`).join(', ')})` : null].filter(Boolean).join(' and ')}, and closing the space would end them without a record — nothing was done. Stop each one first:\n${[
-        ...neighbours.map(p => `  maw herdr kill ${paneHandle(r, p.pane)}`),
-        ...neighbourJobs.map(j => `  ${herdrLine(['pane', 'send-keys', j.pane, 'ctrl+c'], r.session)}`),
-      ].join('\n')}`,
+      `'${r.label}' holds ${neighbours.length} other agent${neighbours.length === 1 ? '' : 's'}, and a wake card brings back one agent — nothing was done. Stop each other agent first:\n${neighbours.map(p => `  maw herdr kill ${paneHandle(r, p.pane)}`).join('\n')}`,
       'running',
     );
+  }
+  const servers = [];
+  for (const p of r.panes.filter(p => p.pane !== pane && !p.agent)) {
+    const other = await paneProcess(p.pane, r.session);
+    if (!other.running) continue;
+    const stopServer = herdrLine(['pane', 'send-keys', p.pane, 'ctrl+c'], r.session);
+    const group = other.leader ?? other.pid;
+    const serverArgv = (await readArgv(group, other.herdrArgv))?.argv;
+    if (!serverArgv) throw new TargetError(`the process in pane ${p.pane} (pid ${group}) is gone or its command line cannot be read — nothing was done. Look again:\n  maw herdr sleep ${paneHandle(r, pane)} --dry`, 'changed');
+    if (redactArgs(serverArgv).some((a, i) => a !== serverArgv[i])) {
+      throw new TargetError(`the server in pane ${p.pane} was started with a secret in its argv — a wake card holds no secret, so it could not start the server again; nothing was done. Stop the server, then sleep:\n  ${stopServer}`, 'secret');
+    }
+    if (serverArgv.some(a => CONTROL_CHAR.test(a))) {
+      throw new TargetError(`the server in pane ${p.pane} was started with an argument holding a control character, which a resume cannot type again — nothing was done. Stop the server, then sleep:\n  ${stopServer}`, 'unrelaunchable');
+    }
+    servers.push({ pane: p.pane, pid: group, cwd: p.cwd, argv: serverArgv, ports: await listeningPorts(group) });
   }
   if (isCaller(caller, r, pane) || (await isOurAncestor(proc.pid))) {
     throw new TargetError(`this command runs inside the ${r.agent} it would stop — a sleep from there ends itself before it closes the space; nothing was done. Run it from another pane:\n  maw herdr sleep ${paneHandle(r, pane)}`, 'self');
   }
 
-  const card = buildCard({ session: r.session, space: r.label, cwd: r.path, kind: r.agent, sessionId, argv, git: await gitState(r.path), note: o.note });
+  const card = buildCard({ session: r.session, space: r.label, cwd: r.path, kind: r.agent, sessionId, argv, git: await gitState(r.path), note: o.note, panes: servers.map(({ cwd, argv: serverArgv, ports }) => ({ cwd, argv: serverArgv, ports })) });
   const path = cardPath(card);
   const plan = { verb: 'kill', session: r.session, pane, pid: proc.pid, pids: pidsOf(proc), kind: r.agent };
   const close = ['workspace', 'close', r.workspace];
@@ -916,6 +962,7 @@ export async function cmdSleep(args, { UsageError = Error } = {}) {
     `  sleep     ${r.label} · ${r.agent} session ${sessionId} · pane ${pane} · ${r.session}`,
     `    card    ${path} (mode 0600)`,
     `    stop    ctrl+c until pid ${plan.pids.join(' and ')} exit${plan.pids.length === 1 ? 's' : ''} (up to ${QUIT_TRIES})`,
+    ...servers.map(srv => `    server  ${srv.pane} ${commandLine(srv.argv)}${portText(srv.ports)} · ctrl+c, then wait up to ${SERVER_STOP_MS / 1000} s for it to stop`),
     `    close   ${herdrLine(close, r.session)}`,
   ];
   if (o.dry) {
@@ -928,6 +975,13 @@ export async function cmdSleep(args, { UsageError = Error } = {}) {
   writeCard(card);
   for (const l of lines.slice(0, 2)) console.log(l);
   await performKill(plan, () => {});
+  const stuck = await stopServers(servers, r.session);
+  if (stuck.length) {
+    throw new TargetError(
+      `${stuck.map(srv => `the server in pane ${srv.pane} (pid ${srv.pid}${portText(srv.ports)})`).join(' and ')} still runs ${SERVER_STOP_MS / 1000} s after ctrl+c — the ${r.agent} is asleep and its wake card is written (${path}), but the space stays open so the server is not cut off, and nothing was killed. Stop it, then close the space:\n${stuck.map(srv => `  kill ${srv.pid}`).join('\n')}\n  maw herdr close ${targetHandle(r)}`,
+      'stuck',
+    );
+  }
   await herdr(close, r.session);
   console.log(`  asleep ${r.label}: the ${r.agent} is stopped and the space is closed; the worktree and the transcript stay. Wake it with:\n  maw herdr resume ${shq(r.path)}`);
 }
