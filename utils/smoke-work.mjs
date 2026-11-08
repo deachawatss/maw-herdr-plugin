@@ -107,13 +107,23 @@ process.exit(96);
 
   // F — a space already on that folder is reused, never doubled
   reset();
-  const panes = JSON.stringify([{ pane_id: 'wT:p9', cwd: widget }]);
+  const panes = JSON.stringify([{ pane_id: 'wT:p9', cwd: widget, agent: 'claude' }]);
   r = run([widget, '--dry'], { FAKE_PANES: panes });
   ok(r.status === 0 && r.stdout.includes('# already open: wT:p9'), `F --dry shows the open pane: ${r.stdout}`);
   reset();
   r = run([widget], { FAKE_PANES: panes });
   ok(r.status === 0 && r.stdout.includes('nothing started'), `F reuses: ${r.stdout}${r.stderr}`);
   ok(!calls(herdrLog).some(argv => argv.includes('workspace') || argv.includes('agent')), 'F starts nothing');
+
+  reset();
+  const shellOnly = JSON.stringify([{ pane_id: 'wT:p7', cwd: widget, agent: null }]);
+  r = run([widget, '--dry'], { FAKE_PANES: shellOnly });
+  ok(r.status === 0 && !r.stdout.includes('already open') && r.stdout.includes('--pane wT:p7'), `F2 --dry plans the agent in the shell pane: ${r.stdout}`);
+  reset();
+  r = run([widget], { FAKE_PANES: shellOnly });
+  ok(r.status === 0 && r.stdout.includes('pane wT:p7'), `F2 starts the agent in the shell pane: ${r.stdout}${r.stderr}`);
+  ok(!calls(herdrLog).some(argv => argv.includes('workspace')), 'F2 makes no new space');
+  ok(calls(herdrLog).some(argv => argv.includes('start') && argv.includes('wT:p7')), 'F2 starts the agent in wT:p7');
 
   // G — for real against the fake herdr: the worktree is made by git, then space and agent
   reset();
@@ -221,7 +231,7 @@ process.exit(96);
   eq(focusCalls, [['pane.focus', { pane_id: 'wT:p1' }]], `P1 the new agent's pane is focused: ${r.stdout}`);
   ok(r.stdout.includes('focused solo-front (wT:p1)') && !r.stdout.includes('bring it up'), `P1 says it is in front: ${r.stdout}`);
   reset(); focusCalls.length = 0;
-  r = await runAsync([widget], { ...inside, FAKE_PANES: JSON.stringify([{ pane_id: 'wT:p9', cwd: widget }]) });
+  r = await runAsync([widget], { ...inside, FAKE_PANES: JSON.stringify([{ pane_id: 'wT:p9', cwd: widget, agent: 'claude' }]) });
   eq(focusCalls, [['pane.focus', { pane_id: 'wT:p9' }]], `P2 an open space is focused, not doubled: ${r.stdout}${r.stderr}`);
   ok(!calls(herdrLog).some(argv => argv.includes('workspace') || argv.includes('agent')), 'P2 starts nothing');
   reset(); focusCalls.length = 0;
