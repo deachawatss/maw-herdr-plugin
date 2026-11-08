@@ -52,6 +52,9 @@ import {
   redactArgs, secretValues, sessionInArgs, withChannel, withSession,
 } from './mod.agentArgv.mjs';
 import { SAFE_ID, configuredProviders, encodeClaudeDir, findSessions } from './mod.resumeLookup.mjs';
+import { mawStateDir } from './mod.stateDir.mjs';
+import { claudeRegistryId, transcriptOf } from './mod.sessionId.mjs';
+import { buildCard, cardPath, findAsleepCard, gitState, markWoke, wakeCardDir, writeCard } from './mod.wakeCard.mjs';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -330,12 +333,8 @@ async function performKill(plan, log) {
 
 const PERFORM = { restart: performRestart, kill: performKill };
 
-/** Where detached work reports: maw's state dir (same rule as the server), herdr/lifecycle.log. */
 export function lifecycleLogPath(env = process.env) {
-  const home = env.HOME || homedir();
-  const xdg = ['1', 'true', 'yes', 'on'].includes((env.MAW_XDG || '').toLowerCase());
-  const state = env.MAW_HOME || env.MAW_STATE_DIR || (xdg ? join(env.XDG_STATE_HOME || join(home, '.local', 'state'), 'maw') : join(home, '.maw'));
-  return join(state, 'herdr', 'lifecycle.log');
+  return join(mawStateDir(env), 'herdr', 'lifecycle.log');
 }
 
 // The entry to re-run for the detached worker: index.mjs from source, or the bundle
@@ -402,8 +401,10 @@ const HELP = {
   --no-channel             drop every development channel
   From an agent's own ! prompt, 'maw herdr restart self' hands off to a detached
   worker and returns; follow it in ${lifecycleLogPath()}.`,
-  resume: `maw herdr resume [<target>] [--session <name>] [--dry]
-  Start the agent on the newest transcript for the target's worktree (resume
+  resume: `maw herdr resume [<target>] [--session <name>] [--no-card] [--dry]
+  A target with a wake card from 'maw herdr sleep' starts the agent with the card's
+  argv on the card's session id, and marks the card woke; --no-card ignores the card.
+  Otherwise start the agent on the newest transcript for the target's worktree (resume
   providers: MAW_HERDR_RESUME_PROVIDERS, MAW_HERDR_CLAUDE_ROOTS, MAW_HERDR_CODEX_ROOTS),
   opening a herdr space for it when there is none. Refuses a running agent; a pane
   id (or self) at its shell prompt is resumed even beside a running neighbour. A
@@ -413,11 +414,18 @@ const HELP = {
   close: `maw herdr close [<target>] [--force] [--session <name>] [--dry]
   Close the target's herdr space. The worktree and its transcript stay on disk.
   A space holding a live agent, or any pane running a job, needs --force.`,
+  sleep: `maw herdr sleep <target> [--session <name>] [--dry]
+  Write a wake card, stop the idle agent and close its space. The card holds the
+  agent's session id and argv, the folder and the git state, and sits in
+  ${wakeCardDir()} with mode 0600. 'maw herdr resume <target>' reads the card and
+  starts the same conversation by its session id. Refuses an agent that is working
+  or blocked, one whose session id cannot be read, and one whose argv holds a
+  secret. Never commits, pushes, removes a worktree or deletes a file.`,
 };
 
 function parse(args, verb, UsageError) {
   const rest = [...args];
-  const o = { dry: takeDry(rest), session: null, force: false, channel: undefined, worker: false, help: false, target: undefined };
+  const o = { dry: takeDry(rest), session: null, force: false, noCard: false, channel: undefined, worker: false, help: false, target: undefined };
   const pos = [];
   const value = (i, flag) => {
     const a = rest[i];
@@ -432,6 +440,7 @@ function parse(args, verb, UsageError) {
       if (!v || v.startsWith('-')) throw new UsageError('--session needs a session name; list them:\n  maw herdr ls --sessions');
       o.session = v; i += skip;
     } else if (verb === 'close' && a === '--force') o.force = true;
+    else if (verb === 'resume' && a === '--no-card') o.noCard = true;
     else if (verb === 'restart' && (a === '--channel' || a.startsWith('--channel='))) {
       const { v, skip } = value(i, '--channel');
       if (!v || v.startsWith('-')) throw new UsageError('--channel needs the development channel to load:\n  maw herdr restart self --channel server:fleet');
@@ -774,4 +783,97 @@ export async function cmdClose(args, { UsageError = Error } = {}) {
   console.log(line);
   await herdr(cmd, r.session);
   console.log(`  closed '${r.label}'; the worktree and its transcript stay${r.kind === 'worktree' ? `. Bring it back with:\n  maw herdr resume ${targetHandle(r)}` : ''}`);
+}
+
+// --- sleep -----------------------------------------------------------------------------
+
+export async function cmdSleep(args, { UsageError = Error } = {}) {
+  const o = parse(args, 'sleep', UsageError);
+  if (o.help) return void console.log(HELP.sleep);
+  if (!o.target) throw new UsageError('sleep needs a target: a path, an exact name or a pane id\n  maw herdr ls --agents');
+  const caller = callerFromEnv();
+  const r = await resolveLive(o.target, { session: o.session, verb: 'sleep', caller, ...STOPPING });
+  if (!r.workspace) {
+    throw new TargetError(`'${r.label}' has no open herdr space, so no agent runs there to put to sleep — nothing was done. See what runs:\n  maw herdr ls --agents`, 'not-found');
+  }
+  const pane = requirePane(r, 'sleep');
+  const stopByHand = `maw herdr kill ${paneHandle(r, pane)} && maw herdr close ${targetHandle(r)}`;
+  if (!r.agent) throw new TargetError(`'${r.label}' runs no agent (pane ${pane} is a shell) — nothing to put to sleep. Close the space instead:\n  maw herdr close ${targetHandle(r)}`, 'not-running');
+  if (r.status === 'working' || r.status === 'blocked') {
+    throw new TargetError(`the ${r.agent} in pane ${pane} is ${r.status} — a sleep would stop it in the middle of a turn; nothing was done. Look at it, and sleep it when it is idle:\n  maw herdr peek ${paneHandle(r, pane)}`, 'busy');
+  }
+  const proc = await paneProcess(pane, r.session, r.agent);
+  if (!proc.running) {
+    throw new TargetError(`the ${r.agent} in pane ${pane} has already exited — there is no live process to read a session from; nothing was done. Bring it back from its newest transcript:\n  maw herdr resume ${paneHandle(r, pane)}`, 'not-running');
+  }
+  if (!proc.isAgent) throw notTheAgent(r, pane, proc);
+  if (proc.wrapper) {
+    throw new TargetError(`the ${r.agent} in pane ${pane} runs under a wrapper (pid ${proc.wrapper.pid}, ${wrapperCommand(proc.wrapper)}) — a wake card holds the agent's argv, not the wrapper's, so a resume would drop it; nothing was done. Stop it by hand:\n  ${stopByHand}`, 'wrapped');
+  }
+  const read = await readArgv(proc.pid, proc.herdrArgv);
+  if (!read) throw new TargetError(`pid ${proc.pid} behind pane ${pane} is gone — nothing was done. Look again:\n  maw herdr sleep ${paneHandle(r, pane)} --dry`, 'changed');
+  if (read.mismatch) throw new TargetError(`ps and herdr disagree about pid ${proc.pid}'s command line in pane ${pane} — nothing was done. Check again:\n  maw herdr sleep ${paneHandle(r, pane)} --dry`, 'changed');
+  if (read.argv.some(a => CONTROL_CHAR.test(a))) {
+    throw new TargetError(`the ${r.agent} in pane ${pane} was started with an argument holding a control character, which herdr agent start refuses on the resume — nothing was done. Stop it by hand:\n  ${stopByHand}`, 'unrelaunchable');
+  }
+  const at = execIndex(read.argv, r.agent, proc);
+  if (at === -1) {
+    throw new TargetError(`cannot find the ${r.agent} executable in pid ${proc.pid}'s command line, so there is no telling which arguments are its own — nothing was done. Stop it by hand:\n  ${stopByHand}`, 'unrelaunchable');
+  }
+  const argv = dedupeArgs(read.argv.slice(at + 1));
+  if (redactArgs(argv).some((a, i) => a !== argv[i])) {
+    throw new TargetError(`the ${r.agent} in pane ${pane} was started with a secret in its argv — a wake card holds no secret, so it could not start the agent again; nothing was done. Stop it by hand:\n  ${stopByHand}`, 'secret');
+  }
+  if (!knowsResume(r.agent)) {
+    throw new TargetError(`the resume syntax of ${r.agent} is not known here, so a wake card could not bring it back by session id — nothing was done. Stop it by hand:\n  ${stopByHand}`, 'no-session');
+  }
+  const sessionId = (await paneSessionId(pane, r.session)) ?? (r.agent === 'claude' ? claudeRegistryId(proc.pid) : null) ?? sessionInArgs(r.agent, argv);
+  if (!sessionId) {
+    throw new TargetError(`cannot read the session id of the ${r.agent} in pane ${pane} (pid ${proc.pid}): herdr reports none, ${r.agent === 'claude' ? "claude's session registry has no entry for the pid, " : ''}and its argv names none — nothing was done. Stop it by hand:\n  ${stopByHand}`, 'no-session');
+  }
+  const transcript = transcriptOf(configuredProviders(), r.agent, r.path, sessionId);
+  if (!transcript) {
+    throw new TargetError(`the ${r.agent} session ${sessionId} has no transcript on disk for ${r.path} yet, so a resume could not bring it back — nothing was done. Stop it by hand:\n  ${stopByHand}`, 'no-transcript');
+  }
+  const neighbours = r.panes.filter(p => p.pane !== pane && p.agent);
+  const neighbourJobs = [];
+  for (const p of r.panes.filter(p => p.pane !== pane && !p.agent)) {
+    const other = await paneProcess(p.pane, r.session);
+    if (other.running) neighbourJobs.push({ pane: p.pane, name: other.name, pid: other.pid });
+  }
+  if (neighbours.length || neighbourJobs.length) {
+    throw new TargetError(
+      `'${r.label}' holds ${[neighbours.length ? `${neighbours.length} other agent${neighbours.length === 1 ? '' : 's'}` : null, neighbourJobs.length ? `${neighbourJobs.length} pane${neighbourJobs.length === 1 ? '' : 's'} running a job (${neighbourJobs.map(j => `${j.pane}: ${j.name} pid ${j.pid}`).join(', ')})` : null].filter(Boolean).join(' and ')}, and closing the space would end them without a record — nothing was done. Stop each one first:\n${[
+        ...neighbours.map(p => `  maw herdr kill ${paneHandle(r, p.pane)}`),
+        ...neighbourJobs.map(j => `  ${herdrLine(['pane', 'send-keys', j.pane, 'ctrl+c'], r.session)}`),
+      ].join('\n')}`,
+      'running',
+    );
+  }
+  if (isCaller(caller, r, pane) || (await isOurAncestor(proc.pid))) {
+    throw new TargetError(`this command runs inside the ${r.agent} it would stop — a sleep from there ends itself before it closes the space; nothing was done. Run it from another pane:\n  maw herdr sleep ${paneHandle(r, pane)}`, 'self');
+  }
+
+  const card = buildCard({ session: r.session, space: r.label, cwd: r.path, kind: r.agent, sessionId, argv, git: await gitState(r.path) });
+  const path = cardPath(card);
+  const plan = { verb: 'kill', session: r.session, pane, pid: proc.pid, pids: pidsOf(proc), kind: r.agent };
+  const close = ['workspace', 'close', r.workspace];
+  const lines = [
+    `  sleep     ${r.label} · ${r.agent} session ${sessionId} · pane ${pane} · ${r.session}`,
+    `    card    ${path} (mode 0600)`,
+    `    stop    ctrl+c until pid ${plan.pids.join(' and ')} exit${plan.pids.length === 1 ? 's' : ''} (up to ${QUIT_TRIES})`,
+    `    close   ${herdrLine(close, r.session)}`,
+  ];
+  if (o.dry) {
+    printResolved(r);
+    for (const l of lines) console.log(l);
+    console.log(JSON.stringify(card, null, 2));
+    console.log('  --dry: nothing was done');
+    return;
+  }
+  writeCard(card);
+  for (const l of lines.slice(0, 2)) console.log(l);
+  await performKill(plan, () => {});
+  await herdr(close, r.session);
+  console.log(`  asleep ${r.label}: the ${r.agent} is stopped and the space is closed; the worktree and the transcript stay. Wake it with:\n  maw herdr resume ${shq(r.path)}`);
 }
