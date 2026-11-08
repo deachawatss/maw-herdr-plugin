@@ -176,6 +176,16 @@ function gitToplevel(dir) {
   }
 }
 
+function checkoutNames(dir) {
+  try {
+    const [top, common] = execFileSync('git', [...GIT_SAFE, '-C', dir, 'rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'], { encoding: 'utf8', timeout: 5_000, env: GIT_ENV, stdio: ['ignore', 'pipe', 'ignore'] }).trim().split('\n');
+    const repoDir = basename(common) === '.git' ? dirname(common) : common;
+    return { worktree: basename(real(top)), repo: basename(real(repoDir)) };
+  } catch {
+    return null;
+  }
+}
+
 // --- the tier engine ----------------------------------------------------------
 
 /**
@@ -222,7 +232,8 @@ const narrowInSpace = hits => (oneSpace(hits) ? narrow(hits) : null);
 
 /**
  * hey and peek address AGENT panes (roster rows from index.mjs), with the name
- * tiers they have always had: pane, agent name, workspace, tab, prefix, substring.
+ * tiers they have always had: pane, agent name, workspace, tab, worktree, repo,
+ * oracle name, prefix, substring.
  * Their error text and exit codes are relied on and are kept byte-for-byte, with
  * one deliberate change: when a tier hits agents in more than one space, the
  * focused pane no longer decides — the candidates are listed and nothing is done.
@@ -270,12 +281,21 @@ export function resolveAgent(all, target, verb, { caller = callerFromEnv(), cwd 
     throw new TargetError(`no agent pane sits in ${where}\n  see what that path resolves to: maw herdr resolve ${shq(p)}`, 'not-found');
   }
 
+  const checkouts = new Map();
+  const checkout = a => {
+    if (!a.cwd) return null;
+    if (!checkouts.has(a.cwd)) checkouts.set(a.cwd, checkoutNames(a.cwd));
+    return checkouts.get(a.cwd);
+  };
   // Pane ids are colon-shaped too (wD:p4), so scoping is a flag, never a prefix.
   const tiers = [
     ['pane', a => a.pane === target],
     ['agent name', a => a.name === target],
     ['workspace', a => a.workspace === target],
     ['tab', a => a.tabLabel === target],
+    ['worktree', a => checkout(a)?.worktree === target],
+    ['repo', a => checkout(a)?.repo === target],
+    ['oracle name', a => checkout(a)?.repo === `${target}-oracle`],
     ['prefix', a => a.workspace.startsWith(target)],
     ['substring', a => a.workspace.includes(target) || (a.name ?? '').includes(target)],
   ];
