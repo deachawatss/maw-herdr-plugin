@@ -50,7 +50,7 @@ try {
     wt[name] = path;
   };
   makeWorktree('idle', { ahead: 1, dirty: 2 });
-  for (const name of ['busy', 'blk', 'noid', 'secret', 'jobs', 'viaherdr', 'codexa', 'dry', 'nocard', 'gone', 'blockstart']) makeWorktree(name);
+  for (const name of ['busy', 'blk', 'noid', 'secret', 'jobs', 'viaherdr', 'codexa', 'dry', 'nocard', 'gone', 'blockstart', 'twice']) makeWorktree(name);
   makeWorktree('unwritten', { transcript: null });
 
   const bin = join(tmp, 'bin');
@@ -390,6 +390,24 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   r = cli(['resume', wt.blockstart], { env: { FAKE_BLOCKED_START: '1' } });
   ok(r.rc !== 0 && /blocked on a startup screen/.test(r.err), `a start that waits at a screen: ${r.err}`);
   eq(cardOf('blockstart').card.state, 'woke', 'the agent started, so the card is woke');
+
+  space('wN', 'twice');
+  start('wN:p1', 'twice-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-twice-1' });
+  r = cli(['sleep', wt.twice]);
+  eq(r.rc, 0, `first sleep: ${r.err}`);
+  await sleep(30);
+  writeFileSync(join(claudeProjects, encodeClaudeDir(wt.twice), 'sid-twice-2.jsonl'), 't'.repeat(2048));
+  r = cli(['resume', wt.twice, '--no-card']);
+  eq(r.rc, 0, `wake without the card: ${r.err}`);
+  r = cli(['sleep', wt.twice]);
+  eq(r.rc, 0, `second sleep: ${r.err}`);
+  const twice = cards().filter(c => c.card.space === 'twice');
+  eq(twice.map(c => c.card.state), ['asleep', 'asleep'], 'two cards for one folder, both asleep');
+  eq(twice.map(c => c.card.agent.sessionId), ['sid-twice-1', 'sid-twice-2'], 'each holds the session it slept with');
+  r = cli(['resume', wt.twice]);
+  eq(r.rc, 0, `resume with two cards: ${r.err}`);
+  eq(state().starts.at(-1).args, ['--resume', 'sid-twice-2'], 'the newest card wins');
+  eq(cards().filter(c => c.card.space === 'twice').map(c => c.card.state), ['woke', 'woke'], 'the older card is woke too, so no later resume reads it');
 
   console.log(`sleep smoke ok: ${checks} checks (${entry === join(root, 'index.mjs') ? 'source' : 'bundle'})`);
 } finally {

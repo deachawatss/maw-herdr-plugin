@@ -51,21 +51,22 @@ export function findAsleepCard(cwd, env = process.env) {
   const dir = wakeCardDir(env);
   let names;
   try { names = readdirSync(dir).filter(n => n.endsWith('.json')); } catch { return null; }
-  let best = null;
+  const found = [];
   for (const name of names) {
     const path = join(dir, name);
     let card;
     try { card = JSON.parse(readFileSync(path, 'utf8')); } catch { continue; }
-    if (card?.state !== 'asleep' || card.host !== hostname() || card.cwd !== cwd) continue;
-    if (!best || card.at > best.card.at) best = { path, card };
+    if (card?.state === 'asleep' && card.host === hostname() && card.cwd === cwd) found.push({ path, card });
   }
-  return best;
+  found.sort((a, b) => (a.card.at < b.card.at ? 1 : -1));
+  return found.length ? { ...found[0], older: found.slice(1) } : null;
 }
 
-export function markWoke({ path, card }, at = new Date()) {
-  const woke = { ...card, state: 'woke', wokeAt: at.toISOString() };
-  writeFileSync(`${path}.tmp`, `${JSON.stringify(woke, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(`${path}.tmp`, 0o600);
-  renameSync(`${path}.tmp`, path);
-  return woke;
+export function markWoke({ path, card, older = [] }, at = new Date()) {
+  for (const target of [{ path, card }, ...older]) {
+    const woke = { ...target.card, state: 'woke', wokeAt: at.toISOString() };
+    writeFileSync(`${target.path}.tmp`, `${JSON.stringify(woke, null, 2)}\n`, { mode: 0o600 });
+    chmodSync(`${target.path}.tmp`, 0o600);
+    renameSync(`${target.path}.tmp`, target.path);
+  }
 }
