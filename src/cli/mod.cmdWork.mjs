@@ -144,15 +144,17 @@ export async function cmdWork(args, { UsageError = Error, runAttach } = {}) {
   const agent = agentName(label);
   const callerInSession = callerFromEnv()?.session === session;
 
-  // a space already showing this folder is reused, not doubled
   let open = [];
+  let shellPane = null;
   if (!repo.clone && !(worktree && worktree.create)) {
     const panes = (await herdrJson(['pane', 'list'], session)).result?.panes ?? [];
-    open = panes.filter(p => p.cwd && real(p.cwd) === real(path));
+    const atPath = panes.filter(p => p.cwd && real(p.cwd) === real(path));
+    open = atPath.filter(p => p.agent);
+    shellPane = atPath.find(p => !p.agent)?.pane_id ?? null;
   }
   plan.push(...(open.length ? [`# already open: ${open.map(p => p.pane_id).join(', ')}`] : [
-    `${herdrLine(['workspace', 'create', '--cwd', path, '--label', label, '--no-focus'], session)}`,
-    `${herdrLine(['agent', 'start', agent, '--kind', o.engine, '--pane', '<root pane>', ...withArgs(workAgentArgs(o.engine, path))], session)}`,
+    ...(shellPane ? [`# reuse the shell pane ${shellPane}`] : [`${herdrLine(['workspace', 'create', '--cwd', path, '--label', label, '--no-focus'], session)}`]),
+    `${herdrLine(['agent', 'start', agent, '--kind', o.engine, '--pane', shellPane ?? '<root pane>', ...withArgs(workAgentArgs(o.engine, path))], session)}`,
     ...(prompt !== null ? [herdrLine(['agent', 'prompt', agent, prompt], session)] : []),
   ]), ...(callerInSession ? [`# focus ${open.length ? open[0].pane_id : 'the root pane'} in this herdr session`] : o.attach ? [herdrLine([], session)] : []));
 
@@ -194,8 +196,8 @@ export async function cmdWork(args, { UsageError = Error, runAttach } = {}) {
     return;
   }
 
-  const created = await herdrJson(['workspace', 'create', '--cwd', path, '--label', label, '--no-focus'], session);
-  const pane = created.result?.root_pane?.pane_id;
+  const created = shellPane ? null : await herdrJson(['workspace', 'create', '--cwd', path, '--label', label, '--no-focus'], session);
+  const pane = shellPane ?? created.result?.root_pane?.pane_id;
   if (!pane) throw new TargetError(`workspace create returned no root pane: ${JSON.stringify(created).slice(0, 160)}\n  ${herdrLine(['workspace', 'list'], session)}`, 'herdr');
   const name = agentName(label);
   // an engine can take longer than one herdr call to come up: wake allows 60 s, so does work
