@@ -52,7 +52,7 @@ import {
   redactArgs, secretValues, sessionInArgs, withChannel, withSession,
 } from './mod.agentArgv.mjs';
 import { SAFE_ID, configuredProviders, encodeClaudeDir, findSessions } from './mod.resumeLookup.mjs';
-import { resumeBaseArgs } from './mod.workArgs.mjs';
+import { defaultCommandArgs } from './mod.workArgs.mjs';
 import { mawStateDir } from './mod.stateDir.mjs';
 import { claudeRegistryId, transcriptOf } from './mod.sessionId.mjs';
 import { SERVER_STOP_MS, SERVER_START_MS, listeningPorts, portAnswers, portListening, until } from './mod.serverPanes.mjs';
@@ -71,8 +71,8 @@ const CHANNEL_WATCH_MS = 90_000;
 
 /** How each resume provider's session is started: the herdr agent kind and its args. */
 export const RESUME_LAUNCH = {
-  claude: id => ({ kind: 'claude', args: [...resumeBaseArgs('claude'), '--resume', id] }),
-  codex: id => ({ kind: 'codex', args: [...resumeBaseArgs('codex'), 'resume', id] }),
+  claude: id => ({ kind: 'claude', args: withSession('claude', defaultCommandArgs('claude'), id).args }),
+  codex: id => ({ kind: 'codex', args: withSession('codex', defaultCommandArgs('codex'), id).args }),
 };
 
 // --- herdr and process plumbing --------------------------------------------------------
