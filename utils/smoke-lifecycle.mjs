@@ -547,9 +547,13 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   r = cli(['resume', wt.pair]);
   eq(r.rc, 1, 'resume by path still refuses while the neighbour runs');
   ok(r.err.includes('maw herdr restart --session default wB:p1') && r.err.includes('maw herdr resume --session default wB:p2'), `and offers the stopped pane: ${r.err}`);
+  const mawDir = join(home, '.config', 'maw');
+  mkdirSync(mawDir, { recursive: true });
+  writeFileSync(join(mawDir, 'maw.config.50.json'), JSON.stringify({ commands: { default: 'claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions' } }));
   r = cli(['resume', '--session', 'default', 'wB:p2']);
   eq(r.rc, 0, `resume one of two by pane: ${r.err}`);
-  eq([lastStart().pane, lastStart().args], ['wB:p2', ['--resume', 'right-1']], 'its own session, not the neighbour\'s newer live one');
+  eq([lastStart().pane, lastStart().args], ['wB:p2', ['--dangerously-skip-permissions', '--resume', 'right-1']], 'its own session, not the neighbour\'s newer live one, with the flags of maw commands.default and without --continue');
+  rmSync(mawDir, { recursive: true, force: true });
   ok(r.out.includes('skip') && r.out.includes('left-1'), r.out);
   eq(pid('wB:p1'), leftNow, 'the neighbour is untouched'); ok(alive(leftNow));
 
@@ -566,10 +570,13 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   ok(!existsSync(join(tmp, 'pwned')) && !existsSync(join(home, 'pwned')), 'a transcript name that is a shell command never reaches a shell');
   // codex, from its rollout's session_meta cwd — under a free name: a live agent holds "codexy"
   { const s = state(); s.names['wG:p1'] = 'codexy'; writeFileSync(stateFile, JSON.stringify(s)); }
+  mkdirSync(mawDir, { recursive: true });
+  writeFileSync(join(mawDir, 'maw.config.50.json'), JSON.stringify({ commands: { default: 'claude --dangerously-skip-permissions --continue || codex --yolo resume --last' } }));
   r = cli(['resume', 'codexy']);
   eq(r.rc, 0, `resume codex: ${r.err}`);
   const s2 = state().starts.at(-1);
-  eq([s2.kind, s2.args, s2.name], ['codex', ['resume', 'codex-session-9'], 'codexy-2'], 'a taken name gets a suffix before anything opens');
+  eq([s2.kind, s2.args, s2.name], ['codex', ['--yolo', 'resume', 'codex-session-9'], 'codexy-2'], 'a taken name gets a suffix before anything opens; the flags of maw commands.default stay, resume <id> replaces resume --last');
+  rmSync(mawDir, { recursive: true, force: true });
   { const s = state(); s.names['wG:p1'] = 'close-bot'; writeFileSync(stateFile, JSON.stringify(s)); }
   // no transcript anywhere / providers off
   r = cli(['resume', 'bare-wt']);

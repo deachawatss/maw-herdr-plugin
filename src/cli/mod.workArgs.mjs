@@ -36,3 +36,25 @@ export function workAgentArgs(engine, path, env = process.env) {
   const usable = choices.find(args => !args.includes('--continue') || hasTranscript(engine, path, env));
   return usable ?? [];
 }
+
+const SESSION_VALUE_FLAGS = ['--resume', '--session-id'];
+
+function withoutSession(engine, args) {
+  const kept = [];
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i];
+    if (engine === 'claude') {
+      if (word === '--continue' || word === '-c' || SESSION_VALUE_FLAGS.some(flag => word.startsWith(`${flag}=`))) continue;
+      if (SESSION_VALUE_FLAGS.includes(word)) { i++; continue; }
+    } else if (word === '--last') continue;
+    else if (word === 'resume') { if (args[i + 1] && !args[i + 1].startsWith('-')) i++; continue; }
+    kept.push(word);
+  }
+  return kept;
+}
+
+export function resumeBaseArgs(engine, env = process.env) {
+  const command = mawDefaultCommand(env);
+  const first = command ? alternatives(command, engine)[0] : null;
+  return first ? withoutSession(engine, first) : [];
+}
