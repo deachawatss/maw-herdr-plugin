@@ -51,7 +51,7 @@ try {
     wt[name] = path;
   };
   makeWorktree('idle', { ahead: 1, dirty: 2 });
-  for (const name of ['busy', 'blk', 'noid', 'secret', 'jobs', 'viaherdr', 'codexa', 'dry', 'nocard', 'gone', 'blockstart', 'twice', 'noted', 'srv', 'stub', 'blocksrv']) makeWorktree(name);
+  for (const name of ['busy', 'blk', 'noid', 'secret', 'jobs', 'viaherdr', 'codexa', 'dry', 'nocard', 'gone', 'blockstart', 'twice', 'noted', 'srv', 'stub', 'blocksrv', 'changed']) makeWorktree(name);
   makeWorktree('unwritten', { transcript: null });
 
   const bin = join(tmp, 'bin');
@@ -88,7 +88,7 @@ setInterval(() => {}, 1 << 30);
   const fake = join(bin, 'herdr');
   writeFileSync(fake, `#!${runtime}
 import { appendFileSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 const STATE = ${JSON.stringify(stateFile)};
 const AGENTS = ${JSON.stringify(agentsDir)};
 const RUNTIME = ${JSON.stringify(runtime)};
@@ -148,9 +148,10 @@ else if (verb === 'pane split') {
 else if (verb === 'pane run') {
   const pane = s.panes.find(p => p.pane_id === rest[2]);
   if (!pane) die('fake herdr: no pane ' + rest[2]);
-  const child = spawn('sh', ['-c', 'exec ' + rest.slice(3).join(' ')], { cwd: pane.cwd, detached: true, stdio: 'ignore' });
+  const argv = execFileSync('sh', ['-c', 'printf "%s\\\\0" ' + rest.slice(3).join(' ')], { encoding: 'utf8' }).split('\\0').slice(0, -1);
+  const child = spawn(argv[0], argv.slice(1), { cwd: pane.cwd, detached: true, stdio: 'ignore' });
   child.unref();
-  s.jobs[pane.pane_id] = { pid: child.pid, argv: ['sh'], argv0: 'sh', name: 'sh' };
+  s.jobs[pane.pane_id] = { pid: child.pid, argv, argv0: argv[0], name: argv[0].split('/').pop() };
   s.runs.push({ pane: pane.pane_id, cwd: pane.cwd, command: rest.slice(3).join(' ') });
   save(s);
   out({ ok: true });
@@ -216,7 +217,7 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   });
 
   mkdirSync(join(home, '.config', 'herdr'), { recursive: true });
-  const baseEnv = { PATH: `${bin}:/usr/bin:/bin`, HOME: home, MAW_HOME: mawHome, NO_COLOR: '1', GIT_CONFIG_NOSYSTEM: '1' };
+  const baseEnv = { PATH: `${bin}:/usr/bin:/bin:/usr/sbin`, HOME: home, MAW_HOME: mawHome, NO_COLOR: '1', GIT_CONFIG_NOSYSTEM: '1' };
   const fakeHerdr = (a, extra = {}) => execFileSync(fake, a, { env: { ...baseEnv, ...extra }, encoding: 'utf8' });
   const start = (pane, name, kind, args, extra) => fakeHerdr(['agent', 'start', name, '--kind', kind, '--pane', pane, '--', ...args], extra);
   const cli = (args, { env = {} } = {}) => {
@@ -302,16 +303,34 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
 
   space('wF', 'jobs');
   start('wF:p1', 'jobs-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-jobs-1' });
-  const job = spawn(runtime, [serverScript, '0', '--api-key', 'sk-server-marker-7'], { stdio: 'ignore', detached: true });
+  const serverArgv = [runtime, serverScript, '0', '--api-key', 'sk-server-marker-7'];
+  const job = spawn(serverArgv[0], serverArgv.slice(1), { stdio: 'ignore', detached: true });
   jobs.push(job);
   patch(s => {
     s.panes.push({ pane_id: 'wF:p2', workspace_id: 'wF', tab_id: 'wF:t1', cwd: wt.jobs, focused: false });
-    s.jobs['wF:p2'] = { pid: job.pid, argv: ['bun', 'server.mjs'], argv0: 'bun', name: 'bun' };
+    s.jobs['wF:p2'] = { pid: job.pid, argv: serverArgv, argv0: runtime, name: runtime.split('/').pop() };
   });
   r = cli(['sleep', wt.jobs]);
   ok(r.rc !== 0 && /wF:p2/.test(r.err) && /secret in its argv/.test(r.err), `a server pane with a secret in its argv: ${r.err}`);
   ok(!r.err.includes('sk-server-marker-7') && !r.out.includes('sk-server-marker-7'), 'the refusal prints no secret');
   ok(alive(pid('wF:p1')) && alive(job.pid), 'agent and server are untouched');
+
+  space('wK', 'changed');
+  start('wK:p1', 'changed-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-changed-1' });
+  const changedArgv = [runtime, serverScript, '0'];
+  const changed = spawn(changedArgv[0], changedArgv.slice(1), { stdio: 'ignore', detached: true });
+  jobs.push(changed);
+  patch(s => {
+    s.panes.push({ pane_id: 'wK:p2', workspace_id: 'wK', tab_id: 'wK:t1', cwd: wt.changed, focused: false });
+    s.jobs['wK:p2'] = { pid: changed.pid, argv: [...changedArgv, '--other'], argv0: runtime, name: runtime.split('/').pop() };
+  });
+  r = cli(['sleep', wt.changed, '--dry']);
+  if (process.platform === 'linux') {
+    ok(r.rc === 0 && r.out.includes('wK:p2') && !r.out.includes('--other'), `/proc wins over the argv herdr reports: ${r.err}${r.out}`);
+  } else {
+    ok(r.rc !== 0 && /wK:p2/.test(r.err) && /command line cannot be read/.test(r.err), `ps and herdr disagree, so the sleep refuses: ${r.err}${r.out}`);
+  }
+  ok(alive(pid('wK:p1')) && alive(changed.pid), 'agent and server are untouched');
 
   space('wG', 'viaherdr');
   start('wG:p1', 'viaherdr-bot', 'claude', [SKIP, '--resume', 'sid-viaherdr-old'], { FAKE_HERDR_SESSION: 'sid-viaherdr-new' });
@@ -505,14 +524,14 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   space('wP', 'srv');
   start('wP:p1', 'srv-bot', 'claude', [SKIP], { FAKE_SESSION_ID: 'sid-srv-1' });
   mkdirSync(join(wt.srv, 'web'), { recursive: true });
-  const srvPid = serve('wP:p2', join(wt.srv, 'web'), srvPort);
+  const srvPid = serve('wP:p2', join(wt.srv, 'web'), srvPort, ["'two words'"]);
   patch(s => { s.panes.push({ pane_id: 'wP:p3', workspace_id: 'wP', tab_id: 'wP:t1', cwd: wt.srv, focused: false }); });
   ok(await until(() => answers(srvPort)), 'the server answers before the sleep');
   const srvAgent = pid('wP:p1');
   n = calls().length;
   r = cli(['sleep', wt.srv], { env: secretEnv });
   eq(r.rc, 0, `sleep a space with a server pane: ${r.err}${r.out}`);
-  eq(cardOf('srv').card.panes, [{ cwd: join(wt.srv, 'web'), argv: [runtime, serverScript, String(srvPort)], ports: [srvPort] }], 'the card lists the server pane with its cwd, argv and port; the bare shell pane is not a server');
+  eq(cardOf('srv').card.panes, [{ cwd: join(wt.srv, 'web'), argv: [runtime, serverScript, String(srvPort), 'two words'], ports: [srvPort] }], 'the card lists the server pane with its cwd, argv and port; the bare shell pane is not a server');
   ok(!readFileSync(cardOf('srv').path, 'utf8').includes('env-value-one-marker'), 'no environment value is in the card');
   const keys = mutationsSince(n).filter(a => verbOf(a) === 'pane send-keys').map(a => (a[0] === '--session' ? a.slice(2) : a)[2]);
   ok(keys.indexOf('wP:p1') !== -1 && keys.indexOf('wP:p2') > keys.lastIndexOf('wP:p1'), `the agent stops first, then the server: ${keys}`);
@@ -544,6 +563,7 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   const wakeOrder = calls().slice(n).map(verbOf);
   ok(wakeOrder.indexOf('agent start') < wakeOrder.indexOf('pane run') && wakeOrder.indexOf('pane run') < wakeOrder.indexOf('agent prompt'), `agent, then server, then note: ${wakeOrder.filter(v => ['agent start', 'pane run', 'agent prompt'].includes(v))}`);
   ok(await answers(srvPort), 'the port answers after the second wake');
+  eq(state().jobs[state().runs.at(-1).pane].argv.slice(-2), [String(srvPort), 'two words'], 'an argument with a space stays one argument through two sleeps');
 
   const stubPort = await freePort();
   space('wQ', 'stub');
