@@ -29,6 +29,7 @@ import {
 import { configuredProviders, encodeClaudeDir } from '../src/cli/mod.resumeLookup.mjs';
 import { commandOf, execIndex, freeName, isKindProcess, secretValues } from '../src/cli/mod.agentArgv.mjs';
 import { spawnWorker } from '../src/cli/mod.lifecycle.mjs';
+import { resumeArgs } from '../src/cli/mod.defaultCommand.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'maw-lifecycle-')));
@@ -50,6 +51,14 @@ try {
   eq(withSession('codex', ['resume', '--last', '--model', 'm'], 'NEW').args, ['--model', 'm', 'resume', 'NEW']);
   eq(withSession('codex', ['--yolo'], 'NEW').args, ['--yolo', 'resume', 'NEW']);
   eq(withSession('gemini', ['--x'], 'NEW'), null, 'an unknown kind is never rewritten');
+  {
+    const cfg = join(tmp, 'resume-args-config');
+    mkdirSync(cfg, { recursive: true });
+    eq(resumeArgs('claude', 'NEW', { MAW_CONFIG_DIR: cfg }), ['--resume', 'NEW'], 'no commands.default: only the session');
+    writeFileSync(join(cfg, 'maw.config.50.json'), JSON.stringify({ commands: { default: 'claude --dangerously-skip-permissions --continue || codex --yolo resume --last' } }));
+    eq(resumeArgs('claude', 'NEW', { MAW_CONFIG_DIR: cfg }), ['--dangerously-skip-permissions', '--resume', 'NEW'], 'the flags of commands.default stay, --continue goes');
+    eq(resumeArgs('codex', 'NEW', { MAW_CONFIG_DIR: cfg }), ['--yolo', 'resume', 'NEW'], 'codex keeps --yolo, resume <id> replaces resume --last');
+  }
   eq(sessionInArgs('claude', ['--resume', 'abc']), 'abc');
   eq(sessionInArgs('claude', ['--resume=abc']), 'abc');
   eq(sessionInArgs('codex', ['resume', 'abc']), 'abc');

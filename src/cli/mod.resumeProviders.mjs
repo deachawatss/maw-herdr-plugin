@@ -55,6 +55,7 @@
 import { closeSync, openSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, delimiter, join } from 'node:path';
+import { resumeArgs } from './mod.defaultCommand.mjs';
 
 // A transcript this small holds a header and nothing to return to; resuming it
 // opens an empty session, which is not what "resumable" promises.
@@ -120,7 +121,7 @@ export function claudeProvider(roots) {
           const file = join(dir, e.name);
           const s = stat(file);
           if (!s || s.size < MIN_BYTES) continue;
-          all.push({ provider: 'claude', id, file, at: s.mtimeMs, bytes: s.size, command: `cd ${shellQuote(path)} && claude --resume ${id}` });
+          all.push({ provider: 'claude', id, file, at: s.mtimeMs, bytes: s.size, command: `cd ${shellQuote(path)} && claude ${resumeArgs('claude', id).join(' ')}` });
         }
       }
       if (all.length) out.set(path, all.sort((a, b) => b.at - a.at));
@@ -156,7 +157,7 @@ export function claudeProvider(roots) {
         const recorded = firstString(head, 'gitBranch');
         const branch = recorded && recorded !== 'HEAD' ? recorded : null;
         const list = out.get(cwd) ?? [];
-        for (const f of files) list.push({ provider: 'claude', id: f.id, file: f.file, at: f.at, bytes: f.bytes, branch, command: `cd ${shellQuote(cwd)} && claude --resume ${f.id}` });
+        for (const f of files) list.push({ provider: 'claude', id: f.id, file: f.file, at: f.at, bytes: f.bytes, branch, command: `cd ${shellQuote(cwd)} && claude ${resumeArgs('claude', f.id).join(' ')}` });
         out.set(cwd, list.sort((a, b) => b.at - a.at));
       }
     }
@@ -240,7 +241,7 @@ export function codexProvider(roots) {
         const id = meta.id ?? e.name.slice(0, -'.jsonl'.length).slice(-36);
         if (!SAFE_ID.test(id)) continue;
         if (!all.has(key)) all.set(key, []);
-        all.get(key).push({ provider: 'codex', id, file: full, at: s.mtimeMs, bytes: s.size, command: `cd ${shellQuote(meta.cwd)} && codex resume ${id}` });
+        all.get(key).push({ provider: 'codex', id, file: full, at: s.mtimeMs, bytes: s.size, command: `cd ${shellQuote(meta.cwd)} && codex ${resumeArgs('codex', id).join(' ')}` });
       }
     };
     for (const root of roots) walk(root, 0);
