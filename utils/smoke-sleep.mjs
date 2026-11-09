@@ -88,7 +88,7 @@ setInterval(() => {}, 1 << 30);
   const fake = join(bin, 'herdr');
   writeFileSync(fake, `#!${runtime}
 import { appendFileSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 const STATE = ${JSON.stringify(stateFile)};
 const AGENTS = ${JSON.stringify(agentsDir)};
 const RUNTIME = ${JSON.stringify(runtime)};
@@ -148,9 +148,10 @@ else if (verb === 'pane split') {
 else if (verb === 'pane run') {
   const pane = s.panes.find(p => p.pane_id === rest[2]);
   if (!pane) die('fake herdr: no pane ' + rest[2]);
-  const child = spawn('sh', ['-c', 'exec ' + rest.slice(3).join(' ')], { cwd: pane.cwd, detached: true, stdio: 'ignore' });
+  const argv = execFileSync('sh', ['-c', 'printf "%s\\\\0" ' + rest.slice(3).join(' ')], { encoding: 'utf8' }).split('\\0').slice(0, -1);
+  const child = spawn(argv[0], argv.slice(1), { cwd: pane.cwd, detached: true, stdio: 'ignore' });
   child.unref();
-  s.jobs[pane.pane_id] = { pid: child.pid, argv: ['sh'], argv0: 'sh', name: 'sh' };
+  s.jobs[pane.pane_id] = { pid: child.pid, argv, argv0: argv[0], name: argv[0].split('/').pop() };
   s.runs.push({ pane: pane.pane_id, cwd: pane.cwd, command: rest.slice(3).join(' ') });
   save(s);
   out({ ok: true });
@@ -216,7 +217,7 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   });
 
   mkdirSync(join(home, '.config', 'herdr'), { recursive: true });
-  const baseEnv = { PATH: `${bin}:/usr/bin:/bin`, HOME: home, MAW_HOME: mawHome, NO_COLOR: '1', GIT_CONFIG_NOSYSTEM: '1' };
+  const baseEnv = { PATH: `${bin}:/usr/bin:/bin:/usr/sbin`, HOME: home, MAW_HOME: mawHome, NO_COLOR: '1', GIT_CONFIG_NOSYSTEM: '1' };
   const fakeHerdr = (a, extra = {}) => execFileSync(fake, a, { env: { ...baseEnv, ...extra }, encoding: 'utf8' });
   const start = (pane, name, kind, args, extra) => fakeHerdr(['agent', 'start', name, '--kind', kind, '--pane', pane, '--', ...args], extra);
   const cli = (args, { env = {} } = {}) => {
@@ -306,7 +307,7 @@ else die('fake herdr: unexpected ' + JSON.stringify(args), 8);
   jobs.push(job);
   patch(s => {
     s.panes.push({ pane_id: 'wF:p2', workspace_id: 'wF', tab_id: 'wF:t1', cwd: wt.jobs, focused: false });
-    s.jobs['wF:p2'] = { pid: job.pid, argv: ['bun', 'server.mjs'], argv0: 'bun', name: 'bun' };
+    s.jobs['wF:p2'] = { pid: job.pid, argv: [runtime, serverScript, '0', '--api-key', 'sk-server-marker-7'], argv0: runtime, name: 'bun' };
   });
   r = cli(['sleep', wt.jobs]);
   ok(r.rc !== 0 && /wF:p2/.test(r.err) && /secret in its argv/.test(r.err), `a server pane with a secret in its argv: ${r.err}`);
