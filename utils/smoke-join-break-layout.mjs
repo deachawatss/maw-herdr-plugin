@@ -60,6 +60,8 @@ try {
   eq(verifyCaller({ pane: 'w9:p9', session: 'default' }, { me, info, panes }).pane, 'w1:p1', 'the env pane is gone: the pane whose foreground group is ours');
   eq(verifyCaller({ pane: 'w9:p9', session: 'default' }, { me, info, panes }).stale, 'w9:p9', 'and the stale id is kept for the message');
   eq(verifyCaller({ pane: 'w2:p3' }, { me, info, panes: () => ['w2:p3', 'w3:p1'] }).pane, 'w3:p1', 'a pane whose SHELL is an ancestor is ours too');
+  const alias = id => (id === 'w9:p9' ? { ...procs['w1:p1'], pane: 'w1:p1' } : info(id));
+  eq(verifyCaller({ pane: 'w9:p9', session: 'default' }, { me, info: alias, panes }), { pane: 'w1:p1', session: 'default', stale: 'w9:p9', confirmed: true }, 'herdr answers the moved pane\'s old id as an alias: the id herdr reports, the env id kept as stale');
   const lost = { pane: 'w2:p3', session: 'default' };
   ok(verifyCaller(lost, { me, info, panes: () => ['w2:p3'] }) === lost, 'no positive match anywhere: the env value, untouched (a detached worker)');
   ok(verifyCaller(lost, { me, info: () => { throw new Error('unsupported'); }, panes }) === lost, 'herdr cannot say: the env value');
