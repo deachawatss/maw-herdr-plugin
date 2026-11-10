@@ -3,7 +3,8 @@
  *
  * herdr exports HERDR_PANE_ID into a pane when the pane's process starts and never
  * updates it. `herdr pane move` to another workspace gives the pane a new id, so
- * after a move the environment names a pane that is gone — or, once herdr hands
+ * after a move the environment names a pane that is gone, an alias that herdr
+ * still answers for the moved pane — or, once herdr hands
  * that id out again, a different pane. Measured: after five moves an agent's
  * environment still said w7N:p1 while it sat in w7D:pC. `herdr pane current` has
  * the same blind spot: it echoes the environment.
@@ -45,7 +46,10 @@ export function verifyCaller(caller, { me = null, info = paneProcess, panes = se
     const self = me ?? ancestry();
     let own = null;
     try { own = info(caller.pane, caller.session); } catch { /* gone, or herdr cannot say */ }
-    if (ours(own, self)) return { ...caller, confirmed: true };
+    if (ours(own, self)) {
+      const live = own.pane ?? caller.pane;
+      return live === caller.pane ? { ...caller, confirmed: true } : { ...caller, pane: live, stale: caller.pane, confirmed: true };
+    }
     for (const id of panes(caller.session)) {
       if (id === caller.pane) continue;
       let proc = null;
