@@ -32,6 +32,8 @@ bun-check:
     MAW_SCRATCH_ENTRY="$output/index.js" bun utils/smoke-scratch-repos.mjs
     bun utils/smoke-send-live.mjs
     MAW_SEND_LIVE_ENTRY="$output/index.js" bun utils/smoke-send-live.mjs
+    bun utils/smoke-hey-draft.mjs
+    MAW_HEY_DRAFT_ENTRY="$output/index.js" bun utils/smoke-hey-draft.mjs
     bun utils/smoke-layout-live.mjs
     MAW_LAYOUT_LIVE_ENTRY="$output/index.js" bun utils/smoke-layout-live.mjs
     bun utils/smoke-watch-inbox.mjs

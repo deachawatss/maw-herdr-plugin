@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `maw herdr hey` no longer types into a pane whose last `❯` row holds a draft (#21). It reads the visible
+  screen every 5 s for up to 120 s (`src/cli/mod.draftGuard.mjs`), sends when the row empties, and at the
+  deadline sends nothing and exits non-zero with a command to send again. A pane with no `❯` row sends at
+  once. `--dry` reports the row and types nothing. `utils/smoke-hey-draft.mjs`.
 - Add `maw herdr sleep <target> [--dry]` and wake-card resume (NWFTH-Software/NWFTH-PM#68). Sleep writes
   a 0600 card (session id, argv, cwd, git state) to `<maw state>/herdr/wake/`, stops an idle agent and
   closes its space. `resume` reads a card that is not woke, starts the agent with its argv and

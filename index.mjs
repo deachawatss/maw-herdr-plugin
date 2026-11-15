@@ -30,6 +30,7 @@ import { cmdRestore } from './src/cli/mod.cmdRestore.mjs';
 import { cmdWork } from './src/cli/mod.cmdWork.mjs';
 import { cmdWt } from './src/cli/mod.cmdWt.mjs';
 import { cmdHandover } from './src/cli/mod.cmdHandover.mjs';
+import { draftLimits, inputRowState, waitForEmptyInput } from './src/cli/mod.draftGuard.mjs';
 
 const execFileP = promisify(execFile);
 
@@ -1099,10 +1100,21 @@ async function cmdHey(args) {
 
   const hit = resolveAgent(pool, target, verb, { message });
   console.log(`  ${statusDot(hit.status)} ${C.cyan}${label(hit)}${C.off} ${C.dim}${hit.pane} · ${hit.agent} · ${hit.status} · ${hit.session}${C.off}`);
+  const readInput = () => {
+    try { return herdr(['pane', 'read', hit.pane, '--source', 'visible', '--format', 'ansi'], hit.session); }
+    catch { return ''; }
+  };
+  const limits = draftLimits();
   if (dryRun) {
+    if (inputRowState(readInput()) === 'draft') {
+      console.log(`  ${C.dim}input row holds a draft: would read every ${limits.pollMs / 1000}s and send when it empties, or stop after ${limits.waitMs / 1000}s${C.off}`);
+    }
     console.log(`  ${C.dim}would run:${C.off} herdr --session ${hit.session} agent prompt ${hit.pane} ${JSON.stringify(message)}`);
     console.log(`  ${C.dim}matched by ${hit.how} · nothing was sent${C.off}`);
     return;
+  }
+  if (await waitForEmptyInput({ read: readInput, ...limits }) === 'draft') {
+    throw new Error(`a draft is in the input row of ${hit.pane} (${label(hit)}); nothing was sent after ${limits.waitMs / 1000}s\n  maw herdr hey ${shq(hit.pane)} ${shq(message)}`);
   }
   // `agent prompt` takes a PANE ID here, not a handle: herdr agents are almost
   // always unnamed, so handle targeting would fail for nearly every pane.
